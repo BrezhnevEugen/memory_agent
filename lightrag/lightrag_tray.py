@@ -22,7 +22,7 @@ from AppKit import (
     NSColor, NSFont, NSForegroundColorAttributeName, NSFontAttributeName,
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSBackingStoreBuffered, NSTextField, NSButton,
-    NSPopUpButton, NSBox, NSApp, NSObject,
+    NSPopUpButton, NSBox, NSApp, NSObject, NSSecureTextField,
     NSBezelStyleRounded,
 )
 from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
@@ -157,6 +157,8 @@ class SettingsDelegate(NSObject):
         self.app = app
         self.window = None
         self.model_popup = None
+        self.deepseek_field = None
+        self.openai_field = None
         return self
 
     @objc.python_method
@@ -189,13 +191,31 @@ class SettingsDelegate(NSObject):
             print(f"[BrainAI] Failed to write {key}: {e}")
 
     @objc.python_method
+    def _add_key_field(self, cv, label, env_key, y):
+        cv.addSubview_(_make_label(label, NSMakeRect(20, y + 3, 80, 20)))
+        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(100, y, 340, 24))
+        field.setStringValue_(self._read_env_value(env_key, ""))
+        field.setPlaceholderString_("sk-...")
+        cv.addSubview_(field)
+        return field
+
+    @objc.python_method
+    def _save_key(self, field, env_key):
+        """Write key to .env if changed. Returns True if changed."""
+        new = field.stringValue().strip()
+        if new and new != self._read_env_value(env_key, ""):
+            self._write_env_value(env_key, new)
+            return True
+        return False
+
+    @objc.python_method
     def show(self):
         if self.window is not None:
             self.window.makeKeyAndOrderFront_(None)
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 460, 290
+        W, H = 460, 420
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), style, NSBackingStoreBuffered, False)
@@ -226,6 +246,14 @@ class SettingsDelegate(NSObject):
         self.model_popup.selectItemAtIndex_(current_idx)
         cv.addSubview_(self.model_popup)
         y -= 40
+
+        # ── API Keys ──
+        cv.addSubview_(_make_label("API Keys", NSMakeRect(20, y, 200, 20), bold=True))
+        y -= 28
+        self.deepseek_field = self._add_key_field(cv, "DeepSeek", "LLM_BINDING_API_KEY", y)
+        y -= 32
+        self.openai_field = self._add_key_field(cv, "OpenAI", "EMBEDDING_BINDING_API_KEY", y)
+        y -= 36
 
         # ── Separator ──
         sep1 = NSBox.alloc().initWithFrame_(NSMakeRect(20, y, W - 40, 1))
@@ -321,8 +349,14 @@ class SettingsDelegate(NSObject):
                 need_restart = True
                 notify("BrainAI", "Model changed", f"{old_model} → {model_id}")
 
+        # Save API keys
+        keys_changed = self._save_key(self.deepseek_field, "LLM_BINDING_API_KEY")
+        keys_changed |= self._save_key(self.openai_field, "EMBEDDING_BINDING_API_KEY")
+        if keys_changed:
+            need_restart = True
+            notify("BrainAI", "API keys saved", "Restarting server...")
+
         if need_restart:
-            notify("BrainAI", "Switching model", "Restarting server...")
 
             def restart():
                 # Restart LightRAG server
@@ -334,7 +368,7 @@ class SettingsDelegate(NSObject):
                                capture_output=True)
                 time.sleep(5)
                 self.app._check_status()
-                notify("BrainAI", "Model switched", f"Now using {self.app._current_model}")
+                notify("BrainAI", "Server restarted", f"Model: {self.app._current_model}")
 
             threading.Thread(target=restart, daemon=True).start()
         else:
@@ -420,6 +454,10 @@ class LightRAGApp(rumps.App):
 
         # Initial check
         self._check_status()
+
+        if not self._api_key or not self._read_env("EMBEDDING_BINDING_API_KEY"):
+            notify("BrainAI", "Setup required", "Enter DeepSeek and OpenAI API keys")
+            threading.Timer(1, lambda: self._settings_delegate.show()).start()
 
     # ── Timers ──
 

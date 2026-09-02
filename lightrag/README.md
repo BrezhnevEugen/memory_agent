@@ -7,9 +7,10 @@ Cloud only, no Ollama: LLM = DeepSeek (`deepseek-v4-flash`), embeddings = OpenAI
 
 ```bash
 cd ~/dev_soft/memory_agent/lightrag
-cp .env.example .env   # fill LLM_BINDING_API_KEY (DeepSeek) and EMBEDDING_BINDING_API_KEY (OpenAI)
 ./install.sh           # venv, deps, launchd server + tray
 ```
+
+On first launch the tray opens Settings — enter DeepSeek and OpenAI API keys there (stored in `.env`, server restarts automatically).
 
 Server: http://localhost:9621 (WebUI, `/docs`, `/health`).
 

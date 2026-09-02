@@ -12,7 +12,7 @@ echo "▶ venv ($PY)"
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q "lightrag-hku[api]" mcp httpx rumps psutil pyobjc-framework-Cocoa
 
-[ -f .env ] || { cp .env.example .env; echo "⚠ .env created from example — fill in API keys"; }
+[ -f .env ] || { cp .env.example .env; echo "ℹ .env created — enter API keys in tray → Settings"; }
 mkdir -p rag_storage inputs logs
 
 echo "▶ launchd"

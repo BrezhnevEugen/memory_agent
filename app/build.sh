@@ -4,6 +4,7 @@
 # Env overrides: VERSION, PY_VER (3.12), ARCH (aarch64|x86_64), OLLAMA_VER (latest)
 set -euo pipefail
 cd "$(dirname "$0")"
+trap 'echo "✗ failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
 VERSION="${VERSION:-0.1.0}"
 PY_VER="${PY_VER:-3.12}"
@@ -80,13 +81,20 @@ echo "▶ dmg"
 DMG="$DIST/BrainAI-$VERSION.dmg"
 rm -f "$DMG"
 STAGE=$(mktemp -d); cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
-hdiutil create -quiet -volname BrainAI -srcfolder "$STAGE" -ov -format UDZO "$DMG"
+hdiutil create -volname BrainAI -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
 [ "$SIGN_ID" = "-" ] || codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
 
 # ── 6. Notarize (NOTARY_PROFILE = `xcrun notarytool store-credentials` profile name) ──
-# auto-detect: notarytool stores profiles in keychain under service com.apple.gke.notary.tool, acct = profile name
-NOTARY_PROFILE="${NOTARY_PROFILE:-$(security find-generic-password -s com.apple.gke.notary.tool 2>/dev/null | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p' | head -1)}"
+# auto-detect: notarytool stores profiles in keychain (service/label com.apple.gke.notary.tool, acct = profile name)
+detect_profile() {
+  { security find-generic-password -s com.apple.gke.notary.tool 2>/dev/null \
+    || security find-generic-password -l com.apple.gke.notary.tool 2>/dev/null \
+    || security dump-keychain 2>/dev/null | grep -A8 'com.apple.gke.notary.tool'; } \
+    | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p' | head -1 || true
+}
+NOTARY_PROFILE="${NOTARY_PROFILE:-$(detect_profile || true)}"
+NOTARY_PROFILE="${NOTARY_PROFILE:-brainai-notary}"
 if [ "$SIGN_ID" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
   echo "▶ notarize ($NOTARY_PROFILE)"
   xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait

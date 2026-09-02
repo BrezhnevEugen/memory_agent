@@ -20,7 +20,7 @@ Downloads at build time: python-build-standalone (~30 MB), `lightrag-hku[api]` +
 1. Drag BrainAI.app to Applications. Unsigned build → right-click → Open (or `xattr -dr com.apple.quarantine /Applications/BrainAI.app`).
 2. App starts bundled Ollama, pulls `bge-m3`, then opens Settings.
 3. Enter DeepSeek API key (button **Get** opens the keys page) → Apply. Server starts on `http://127.0.0.1:9621`.
-4. Settings → **Copy MCP config** → paste into Cursor / Claude MCP settings.
+4. Settings → **Connect agents**: one click writes the `lightrag` MCP server into Claude Desktop (`claude_desktop_config.json`), Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`) or Codex (`~/.codex/config.toml`). Restart that app. **Copy config** puts the JSON on the clipboard for anything else.
 5. Optional: **Start at login** (creates `~/Library/LaunchAgents/com.brainai.app.plist`).
 
 If Ollama is already running on `:11434` (user's own install), the app reuses it instead of starting the bundled one.

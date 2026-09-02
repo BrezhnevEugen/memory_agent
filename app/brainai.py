@@ -199,11 +199,46 @@ def make_button(title, frame, target, action):
     return b
 
 
+def mcp_entry():
+    return {"command": PYTHON, "args": [MCP_SERVER, "--lightrag-url", LIGHTRAG_URL]}
+
+
 def mcp_config():
-    return json.dumps({"mcpServers": {"lightrag": {
-        "command": PYTHON,
-        "args": [MCP_SERVER, "--lightrag-url", LIGHTRAG_URL],
-    }}}, indent=2)
+    return json.dumps({"mcpServers": {"lightrag": mcp_entry()}}, indent=2)
+
+
+HOME = pathlib.Path.home()
+MCP_TARGETS = {
+    # name: (path, kind)   kind: json → {"mcpServers": {...}}, toml → [mcp_servers.lightrag]
+    "Claude Desktop": (HOME / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json", "json"),
+    "Claude Code": (HOME / ".claude.json", "json"),
+    "Cursor": (HOME / ".cursor" / "mcp.json", "json"),
+    "Codex": (HOME / ".codex" / "config.toml", "toml"),
+}
+
+
+def install_mcp(name):
+    """Merge the lightrag MCP server into an agent's config. Returns path written."""
+    import re
+    path, kind = MCP_TARGETS[name]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "json":
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except Exception:
+            data = {}
+        data.setdefault("mcpServers", {})["lightrag"] = mcp_entry()
+        path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    else:
+        text = path.read_text() if path.exists() else ""
+        # drop existing [mcp_servers.lightrag] section: header line up to the next table header
+        text = re.sub(r"^\[mcp_servers\.lightrag\]\n(?:(?!^\[).*\n?)*", "", text, flags=re.M)
+        text = text.rstrip() + "\n" if text.strip() else ""
+        args = ", ".join(json.dumps(a) for a in mcp_entry()["args"])
+        text += f'\n[mcp_servers.lightrag]\ncommand = {json.dumps(PYTHON)}\nargs = [{args}]\n'
+        path.write_text(text)
+    log(f"MCP installed for {name}: {path}")
+    return path
 
 
 # ─────────────────────────────────────────────────────────
@@ -358,7 +393,7 @@ class SettingsDelegate(NSObject):
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 480, 430
+        W, H = 480, 470
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, False)
@@ -397,15 +432,24 @@ class SettingsDelegate(NSObject):
         cv.addSubview_(self.login_checkbox)
         y -= 40
 
-        cv.addSubview_(make_label("Agents (MCP)", NSMakeRect(20, y, 200, 20), bold=True))
+        cv.addSubview_(make_label("Connect agents (MCP)", NSMakeRect(20, y, 300, 20), bold=True))
         y -= 32
-        cv.addSubview_(make_button("📋 Copy MCP config", NSMakeRect(20, y, 170, 28), self, "copyMcp:"))
-        cv.addSubview_(make_button("📘 API Docs", NSMakeRect(200, y, 120, 28), self, "openDocs:"))
-        cv.addSubview_(make_button("📂 Data folder", NSMakeRect(330, y, 130, 28), self, "openData:"))
-        y -= 36
-        cv.addSubview_(make_button("📋 Server log", NSMakeRect(20, y, 170, 28), self, "openLogs:"))
-        cv.addSubview_(make_button("🔔 Test notify", NSMakeRect(200, y, 120, 28), self, "testNotify:"))
-        cv.addSubview_(make_button("📝 Edit .env", NSMakeRect(330, y, 130, 28), self, "openEnv:"))
+        bw = 105
+        for i, (title, sel) in enumerate([
+            ("Claude Desktop", "installClaudeDesktop:"),
+            ("Claude Code", "installClaudeCode:"),
+            ("Cursor", "installCursor:"),
+            ("Codex", "installCodex:"),
+        ]):
+            cv.addSubview_(make_button(title, NSMakeRect(20 + i * (bw + 7), y, bw, 28), self, sel))
+        y -= 34
+        cv.addSubview_(make_label("Writes the lightrag server into each app's MCP config; restart the app afterwards.",
+                                  NSMakeRect(20, y, 440, 16), size=11.0))
+        y -= 34
+        cv.addSubview_(make_button("📋 Copy config", NSMakeRect(20, y, 140, 28), self, "copyMcp:"))
+        cv.addSubview_(make_button("📘 API Docs", NSMakeRect(170, y, 110, 28), self, "openDocs:"))
+        cv.addSubview_(make_button("📂 Data", NSMakeRect(290, y, 80, 28), self, "openData:"))
+        cv.addSubview_(make_button("📋 Log", NSMakeRect(380, y, 80, 28), self, "openLogs:"))
 
         apply_btn = make_button("Apply", NSMakeRect(W - 110, 15, 90, 32), self, "applySettings:")
         apply_btn.setKeyEquivalent_("\r")
@@ -451,6 +495,30 @@ class SettingsDelegate(NSObject):
     @objc.IBAction
     def testNotify_(self, sender):
         notify(APP_NAME, "Test notification", "Notifications are working!")
+
+    @objc.python_method
+    def _install(self, name):
+        try:
+            p = install_mcp(name)
+            notify(APP_NAME, f"MCP added to {name}", f"{p.name} updated — restart {name}")
+        except Exception as e:
+            notify(APP_NAME, f"{name}: failed", str(e)[:120])
+
+    @objc.IBAction
+    def installClaudeDesktop_(self, sender):
+        self._install("Claude Desktop")
+
+    @objc.IBAction
+    def installClaudeCode_(self, sender):
+        self._install("Claude Code")
+
+    @objc.IBAction
+    def installCursor_(self, sender):
+        self._install("Cursor")
+
+    @objc.IBAction
+    def installCodex_(self, sender):
+        self._install("Codex")
 
     @objc.IBAction
     def copyMcp_(self, sender):

@@ -55,6 +55,10 @@ PYTHON = str(RES / "python" / "bin" / "python3") if IN_BUNDLE else sys.executabl
 OLLAMA_BIN = str(RES / "ollama" / "ollama") if IN_BUNDLE else (shutil.which("ollama") or "ollama")
 MCP_SERVER = str(RES / "mcp_server.py")
 ENV_DEFAULT = RES / "env.default"
+try:
+    VERSION = (RES / "VERSION").read_text().strip()
+except Exception:
+    VERSION = "dev"
 
 DATA = pathlib.Path.home() / "Library" / "Application Support" / APP_NAME
 ENV_FILE = DATA / ".env"
@@ -397,7 +401,7 @@ class SettingsDelegate(NSObject):
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, False)
-        self.window.setTitle_(f"{APP_NAME} Settings")
+        self.window.setTitle_(f"{APP_NAME} {VERSION} — Settings")
         self.window.setReleasedWhenClosed_(False)
         cv = self.window.contentView()
         y = H - 40
@@ -570,7 +574,7 @@ class BrainAIApp(rumps.App):
             m.set_callback(None)
             return m
 
-        self.header = item(f"🧠 {APP_NAME}")
+        self.header = item(f"🧠 {APP_NAME} {VERSION}")
         self.status_item = item("  Starting…")
         self.api_item = item("  DeepSeek API: —")
         self.ollama_item = item("  Ollama (bge-m3): —")
@@ -591,7 +595,7 @@ class BrainAIApp(rumps.App):
             self.toggle_item, self.webui_item, rumps.separator,
             self.settings_item, self.quit_item,
         ]
-        self.header._menuitem.setAttributedTitle_(make_text(f"🧠 {APP_NAME}", COLOR_LABEL, NSFont.boldSystemFontOfSize_(13.0)))
+        self.header._menuitem.setAttributedTitle_(make_text(f"🧠 {APP_NAME} {VERSION}", COLOR_LABEL, NSFont.boldSystemFontOfSize_(13.0)))
 
         self._alive = False
         self._api_alive = False

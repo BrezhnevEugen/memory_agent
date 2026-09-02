@@ -7,7 +7,8 @@ One `.app` with everything inside: relocatable CPython + LightRAG server, Ollama
 ```bash
 cd app
 ./build.sh                 # → dist/BrainAI.app, dist/BrainAI-0.1.0.dmg
-VERSION=0.2.0 ./build.sh   # bump version
+./bump.sh minor            # 0.1.0 → 0.2.0, opens a CHANGELOG section
+./release.sh               # tag + GitHub release with the DMG
 ARCH=x86_64 ./build.sh     # Intel build (run on Intel or with Rosetta python)
 ```
 
@@ -54,3 +55,16 @@ Notarization runs when `NOTARY_PROFILE` is set to a profile created with `xcrun 
 ```bash
 NOTARY_PROFILE=brainai ./build.sh    # sign → notarize (wait) → staple app + dmg → spctl check
 ```
+
+## Versioning
+
+Single source of truth: `app/VERSION` (semver). `build.sh` stamps it into `Info.plist` and the bundle, the tray shows it in the menu header. Flow for a new release:
+
+```bash
+./bump.sh patch|minor|major   # updates VERSION, adds "## x.y.z — date" to CHANGELOG.md
+# fill in CHANGELOG.md
+./build.sh && ./release.sh    # release notes are taken from that CHANGELOG section
+git commit -am "Release x.y.z" && git push
+```
+
+`release.sh` refuses to overwrite an existing tag or release.

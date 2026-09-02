@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Build a self-contained BrainAI.app (+ DMG) for macOS.
 #   ./build.sh            → dist/BrainAI.app, dist/BrainAI-<ver>.dmg
-# Env overrides: VERSION, PY_VER (3.12), ARCH (aarch64|x86_64), OLLAMA_VER (latest)
+# Version comes from ./VERSION (override with VERSION=x.y.z). Other overrides: PY_VER (3.12), ARCH (aarch64|x86_64), OLLAMA_VER (latest)
 set -euo pipefail
 cd "$(dirname "$0")"
 trap 'echo "✗ failed at line $LINENO: $BASH_COMMAND" >&2' ERR
 
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-$(tr -d "[:space:]" < VERSION)}"
 PY_VER="${PY_VER:-3.12}"
 ARCH="${ARCH:-$(uname -m | sed 's/arm64/aarch64/')}"
 OLLAMA_VER="${OLLAMA_VER:-latest}"
@@ -49,7 +49,7 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 sed "s/__VERSION__/$VERSION/g" Info.plist > "$APP/Contents/Info.plist"
 install -m 755 launcher.sh "$APP/Contents/MacOS/BrainAI"
-cp brainai.py mcp_server.py env.default "$RES/"
+cp brainai.py mcp_server.py env.default VERSION "$RES/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$BUILD/python" "$RES/"
 rsync -a "$BUILD/ollama" "$RES/"
 # strip pip/setuptools/tests to save space

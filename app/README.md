@@ -47,9 +47,10 @@ python3 brainai.py
 
 ## Signing / notarization
 
-`build.sh` signs ad-hoc (`SIGN_ID=-`). For distribution without Gatekeeper warnings set `SIGN_ID="Developer ID Application: …"` and notarize:
+`build.sh` auto-detects a `Developer ID Application` identity in the keychain (override with `SIGN_ID`, use `SIGN_ID=-` for ad-hoc). Signs every Mach-O inside-out with hardened runtime + `entitlements.plist`, then the DMG.
+
+Notarization runs when `NOTARY_PROFILE` is set to a profile created with `xcrun notarytool store-credentials <name>`:
 
 ```bash
-xcrun notarytool submit dist/BrainAI-0.1.0.dmg --keychain-profile AC_PROFILE --wait
-xcrun stapler staple dist/BrainAI.app
+NOTARY_PROFILE=brainai ./build.sh    # sign → notarize (wait) → staple app + dmg → spctl check
 ```

@@ -57,10 +57,23 @@ rm -rf "$RES"/python/lib/python*/site-packages/{pip,setuptools,wheel}* \
 
 "$RES/python/bin/python3" make_icon.py "$RES/BrainAI.icns"
 
-# ── 4. Sign (ad-hoc; required on Apple Silicon) ──
-echo "▶ codesign"
-codesign --force --deep --sign "${SIGN_ID:--}" "$APP"
+# ── 4. Sign ──
+# SIGN_ID: "Developer ID Application: …" (auto-detected from keychain) or "-" for ad-hoc
+if [ -z "${SIGN_ID:-}" ]; then
+  SIGN_ID=$(security find-identity -v -p codesigning | grep -o '"Developer ID Application: [^"]*"' | head -1 | tr -d '"')
+  SIGN_ID="${SIGN_ID:--}"
+fi
+echo "▶ codesign as: $SIGN_ID"
 xattr -cr "$APP" || true
+SIGN_OPTS=(--force --sign "$SIGN_ID" --timestamp --options runtime --entitlements entitlements.plist)
+[ "$SIGN_ID" = "-" ] && SIGN_OPTS=(--force --sign - --entitlements entitlements.plist)
+# inside-out: every Mach-O first (dylibs, .so, executables), then the bundle
+find "$RES/python" "$RES/ollama" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 \
+  | while IFS= read -r -d '' f; do
+      file -b "$f" | grep -q 'Mach-O' && codesign "${SIGN_OPTS[@]}" "$f" 2>/dev/null || true
+    done
+codesign "${SIGN_OPTS[@]}" "$APP"
+codesign --verify --deep --strict "$APP" && echo "  signature ok"
 
 # ── 5. DMG ──
 echo "▶ dmg"
@@ -69,6 +82,20 @@ rm -f "$DMG"
 STAGE=$(mktemp -d); cp -R "$APP" "$STAGE/"; ln -s /Applications "$STAGE/Applications"
 hdiutil create -quiet -volname BrainAI -srcfolder "$STAGE" -ov -format UDZO "$DMG"
 rm -rf "$STAGE"
+[ "$SIGN_ID" = "-" ] || codesign --force --sign "$SIGN_ID" --timestamp "$DMG"
+
+# ── 6. Notarize (NOTARY_PROFILE = `xcrun notarytool store-credentials` profile name) ──
+# auto-detect: notarytool stores profiles in keychain under service com.apple.gke.notary.tool, acct = profile name
+NOTARY_PROFILE="${NOTARY_PROFILE:-$(security find-generic-password -s com.apple.gke.notary.tool 2>/dev/null | sed -n 's/.*"acct"<blob>="\(.*\)"/\1/p' | head -1)}"
+if [ "$SIGN_ID" != "-" ] && [ -n "$NOTARY_PROFILE" ]; then
+  echo "▶ notarize ($NOTARY_PROFILE)"
+  xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait
+  xcrun stapler staple "$APP"
+  xcrun stapler staple "$DMG"
+  spctl -a -vv "$APP" && echo "  gatekeeper ok"
+elif [ "$SIGN_ID" != "-" ]; then
+  echo "ℹ skipped notarization — set NOTARY_PROFILE=<profile from: xcrun notarytool store-credentials>"
+fi
 
 du -sh "$APP" "$DMG"
 echo "✓ done"

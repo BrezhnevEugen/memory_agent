@@ -8,3 +8,7 @@ __pycache__/
 **/.env
 lightrag-legacy/rag_storage/
 lightrag-legacy/rag_storage_backup_*/
+lightrag/rag_storage/
+lightrag/inputs/
+lightrag/logs/*
+!lightrag/logs/.gitkeep

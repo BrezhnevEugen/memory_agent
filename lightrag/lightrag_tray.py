@@ -191,9 +191,16 @@ class SettingsDelegate(NSObject):
             print(f"[BrainAI] Failed to write {key}: {e}")
 
     @objc.python_method
-    def _add_key_field(self, cv, label, env_key, y):
+    def _add_key_field(self, cv, label, env_key, y, get_key_action):
         cv.addSubview_(_make_label(label, NSMakeRect(20, y + 3, 80, 20)))
-        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(100, y, 340, 24))
+        field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(100, y, 290, 24))
+        btn = NSButton.alloc().initWithFrame_(NSMakeRect(395, y - 2, 50, 28))
+        btn.setTitle_("Get")
+        btn.setBezelStyle_(NSBezelStyleRounded)
+        btn.setToolTip_(f"Open {label} API keys page")
+        btn.setTarget_(self)
+        btn.setAction_(get_key_action)
+        cv.addSubview_(btn)
         field.setStringValue_(self._read_env_value(env_key, ""))
         field.setPlaceholderString_("sk-...")
         cv.addSubview_(field)
@@ -250,9 +257,9 @@ class SettingsDelegate(NSObject):
         # ── API Keys ──
         cv.addSubview_(_make_label("API Keys", NSMakeRect(20, y, 200, 20), bold=True))
         y -= 28
-        self.deepseek_field = self._add_key_field(cv, "DeepSeek", "LLM_BINDING_API_KEY", y)
+        self.deepseek_field = self._add_key_field(cv, "DeepSeek", "LLM_BINDING_API_KEY", y, "openDeepSeekKeys:")
         y -= 32
-        self.openai_field = self._add_key_field(cv, "OpenAI", "EMBEDDING_BINDING_API_KEY", y)
+        self.openai_field = self._add_key_field(cv, "OpenAI", "EMBEDDING_BINDING_API_KEY", y, "openOpenAIKeys:")
         y -= 36
 
         # ── Separator ──
@@ -320,6 +327,14 @@ class SettingsDelegate(NSObject):
     def openErrorLogs_(self, sender):
         subprocess.run(["open", "-a", "Console",
                         str(LOG_DIR / "server-error.log")])
+
+    @objc.IBAction
+    def openDeepSeekKeys_(self, sender):
+        webbrowser.open("https://platform.deepseek.com/api_keys")
+
+    @objc.IBAction
+    def openOpenAIKeys_(self, sender):
+        webbrowser.open("https://platform.openai.com/api-keys")
 
     @objc.IBAction
     def testNotify_(self, sender):

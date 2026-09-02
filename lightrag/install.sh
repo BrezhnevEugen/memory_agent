@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install LightRAG (DeepSeek + OpenAI embeddings) as a launchd service on macOS.
+# Install LightRAG (DeepSeek LLM + Ollama bge-m3 embeddings) as a launchd service on macOS.
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
@@ -11,6 +11,12 @@ echo "▶ venv ($PY)"
 [ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/pip install -q --upgrade pip
 .venv/bin/pip install -q "lightrag-hku[api]" mcp httpx rumps psutil pyobjc-framework-Cocoa
+
+echo "▶ ollama (embeddings only: bge-m3)"
+command -v ollama >/dev/null || brew install ollama
+brew services start ollama >/dev/null 2>&1 || true
+for n in $(seq 1 15); do curl -sf http://localhost:11434/api/tags >/dev/null && break; sleep 2; done
+ollama list 2>/dev/null | grep -q '^bge-m3' || ollama pull bge-m3
 
 [ -f .env ] || { cp .env.example .env; echo "ℹ .env created — enter API keys in tray → Settings"; }
 mkdir -p rag_storage inputs logs

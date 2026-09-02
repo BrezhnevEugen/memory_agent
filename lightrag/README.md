@@ -1,7 +1,7 @@
-# LightRAG — DeepSeek + OpenAI embeddings
+# LightRAG — DeepSeek + Ollama embeddings
 
 Persistent memory server for agents (Cowork / Cursor / Claude Code) via LightRAG + MCP.
-Cloud only, no Ollama: LLM = DeepSeek (`deepseek-v4-flash`), embeddings = OpenAI `text-embedding-3-small`.
+LLM = DeepSeek API (`deepseek-v4-flash`); embeddings = local Ollama `bge-m3` (DeepSeek has no embeddings API). No local LLM.
 
 ## Install (macOS)
 
@@ -10,7 +10,7 @@ cd ~/dev_soft/memory_agent/lightrag
 ./install.sh           # venv, deps, launchd server + tray
 ```
 
-On first launch the tray opens Settings — enter DeepSeek and OpenAI API keys there (stored in `.env`, server restarts automatically).
+On first launch the tray opens Settings — enter the DeepSeek API key there (stored in `.env`, server restarts automatically).
 
 Server: http://localhost:9621 (WebUI, `/docs`, `/health`).
 
@@ -45,5 +45,5 @@ tail -f logs/server-error.log
 
 ## Notes
 
-- Old graph from `lightrag-legacy/rag_storage` (bge-m3, dim 1024) is incompatible with dim 1536 — start fresh and re-insert the 28 docs from `kv_store_full_docs.json` if needed.
+- Old graph from `lightrag-legacy/rag_storage` uses the same bge-m3 (dim 1024) — vectors are reusable, but entities were extracted by qwen; better to re-insert the 28 docs from `kv_store_full_docs.json` so DeepSeek rebuilds the graph.
 - Switch to `deepseek-v4-pro` via tray Settings or `LLM_MODEL` in `.env`; `QUERY_LLM_MODEL=deepseek-v4-pro` lets you keep flash for indexing and pro for answers.

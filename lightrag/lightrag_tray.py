@@ -2,7 +2,7 @@
 """
 BrainAI Menu Bar App for macOS
 ================================
-Shows LightRAG & DeepSeek API status in the menu bar with controls
+Shows LightRAG, DeepSeek API & Ollama (embeddings) status in the menu bar with controls
 to start/stop services, open WebUI, and view logs.
 Notifications via osascript for reliable macOS delivery.
 Native colored progress bars via PyObjC NSAttributedString.
@@ -29,6 +29,7 @@ from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
 
 LIGHTRAG_URL = "http://localhost:9621"
 DEEPSEEK_URL = "https://api.deepseek.com"
+OLLAMA_URL = "http://localhost:11434"
 LIGHTRAG_PLIST = "com.lightrag.server"
 import pathlib
 BASE_DIR = pathlib.Path(__file__).resolve().parent
@@ -158,7 +159,6 @@ class SettingsDelegate(NSObject):
         self.window = None
         self.model_popup = None
         self.deepseek_field = None
-        self.openai_field = None
         return self
 
     @objc.python_method
@@ -222,7 +222,7 @@ class SettingsDelegate(NSObject):
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 460, 420
+        W, H = 460, 390
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), style, NSBackingStoreBuffered, False)
@@ -259,8 +259,7 @@ class SettingsDelegate(NSObject):
         y -= 28
         self.deepseek_field = self._add_key_field(cv, "DeepSeek", "LLM_BINDING_API_KEY", y, "openDeepSeekKeys:")
         y -= 32
-        self.openai_field = self._add_key_field(cv, "OpenAI", "EMBEDDING_BINDING_API_KEY", y, "openOpenAIKeys:")
-        y -= 36
+        y -= 4
 
         # ── Separator ──
         sep1 = NSBox.alloc().initWithFrame_(NSMakeRect(20, y, W - 40, 1))
@@ -333,10 +332,6 @@ class SettingsDelegate(NSObject):
         webbrowser.open("https://platform.deepseek.com/api_keys")
 
     @objc.IBAction
-    def openOpenAIKeys_(self, sender):
-        webbrowser.open("https://platform.openai.com/api-keys")
-
-    @objc.IBAction
     def testNotify_(self, sender):
         notify("BrainAI", "Test notification", "Notifications are working!")
 
@@ -366,7 +361,6 @@ class SettingsDelegate(NSObject):
 
         # Save API keys
         keys_changed = self._save_key(self.deepseek_field, "LLM_BINDING_API_KEY")
-        keys_changed |= self._save_key(self.openai_field, "EMBEDDING_BINDING_API_KEY")
         if keys_changed:
             need_restart = True
             notify("BrainAI", "API keys saved", "Restarting server...")
@@ -410,6 +404,9 @@ class LightRAGApp(rumps.App):
         self.api_status_item = rumps.MenuItem("  DeepSeek API: checking...", callback=None)
         self.api_status_item.set_callback(None)
 
+        self.ollama_status_item = rumps.MenuItem("  Ollama (bge-m3): checking...", callback=None)
+        self.ollama_status_item.set_callback(None)
+
         self.model_item = rumps.MenuItem("  Model: ...", callback=None)
         self.model_item.set_callback(None)
 
@@ -428,6 +425,7 @@ class LightRAGApp(rumps.App):
 
         # ── Controls ──
         self.toggle_item = rumps.MenuItem("▶ Start Server", callback=self.toggle_server)
+        self.ollama_toggle = rumps.MenuItem("▶ Start Ollama", callback=self.toggle_ollama)
         self.webui_item = rumps.MenuItem("🌐 Open WebUI", callback=self.open_webui)
 
         # ── Settings & Quit ──
@@ -439,6 +437,7 @@ class LightRAGApp(rumps.App):
             rumps.separator,
             self.status_item,
             self.api_status_item,
+            self.ollama_status_item,
             self.model_item,
             self.docs_count_item,
             self.entities_count_item,
@@ -447,6 +446,7 @@ class LightRAGApp(rumps.App):
             self.swap_item,
             rumps.separator,
             self.toggle_item,
+            self.ollama_toggle,
             self.webui_item,
             rumps.separator,
             self.settings_item,
@@ -455,6 +455,7 @@ class LightRAGApp(rumps.App):
 
         self._lightrag_alive = False
         self._api_alive = False
+        self._ollama_alive = False
         self._last_doc_count = None
         self._last_entity_count = None
         self._last_status_counts = {}
@@ -470,8 +471,8 @@ class LightRAGApp(rumps.App):
         # Initial check
         self._check_status()
 
-        if not self._api_key or not self._read_env("EMBEDDING_BINDING_API_KEY"):
-            notify("BrainAI", "Setup required", "Enter DeepSeek and OpenAI API keys")
+        if not self._api_key:
+            notify("BrainAI", "Setup required", "Enter DeepSeek API key")
             threading.Timer(1, lambda: self._settings_delegate.show()).start()
 
     # ── Timers ──
@@ -507,6 +508,13 @@ class LightRAGApp(rumps.App):
             self._api_alive = r.status_code == 200
         except Exception:
             self._api_alive = False
+        self._ollama_alive = False
+
+        try:
+            r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=3)
+            self._ollama_alive = r.status_code == 200
+        except Exception:
+            self._ollama_alive = False
 
         self._check_memory()
         self._update_ui()
@@ -611,6 +619,13 @@ class LightRAGApp(rumps.App):
         else:
             self.api_status_item.title = "  🔴 DeepSeek API unreachable"
 
+        if self._ollama_alive:
+            self.ollama_status_item.title = "  🟢 Ollama (bge-m3) running"
+            self.ollama_toggle.title = "⏹ Stop Ollama"
+        else:
+            self.ollama_status_item.title = "  🔴 Ollama (bge-m3) stopped"
+            self.ollama_toggle.title = "▶ Start Ollama"
+
         self.model_item.title = f"  🤖 Model: {self._current_model}"
 
     # ── Model ──
@@ -648,6 +663,14 @@ class LightRAGApp(rumps.App):
                             f"{_home()}/Library/LaunchAgents/{LIGHTRAG_PLIST}.plist"])
             self._lightrag_alive = None
         threading.Timer(3, self._check_status).start()
+
+    def toggle_ollama(self, _):
+        if self._ollama_alive:
+            subprocess.run(["brew", "services", "stop", "ollama"], capture_output=True)
+        else:
+            subprocess.run(["brew", "services", "start", "ollama"], capture_output=True)
+        self._ollama_alive = None
+        threading.Timer(5, self._check_status).start()
 
     def open_webui(self, _):
         webbrowser.open(LIGHTRAG_URL)

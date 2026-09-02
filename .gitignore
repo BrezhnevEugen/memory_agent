@@ -12,3 +12,5 @@ lightrag/rag_storage/
 lightrag/inputs/
 lightrag/logs/*
 !lightrag/logs/.gitkeep
+app/build/
+app/dist/

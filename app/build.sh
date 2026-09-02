@@ -48,7 +48,16 @@ echo "▶ bundle"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$RES"
 sed "s/__VERSION__/$VERSION/g" Info.plist > "$APP/Contents/Info.plist"
-install -m 755 launcher.sh "$APP/Contents/MacOS/BrainAI"
+# Main executable: compiled launcher embedding libpython (py2app-style); shell fallback if no clang/libpython
+PYLIB=$(ls "$BUILD"/python/lib/libpython${PY_VER}*.dylib 2>/dev/null | head -1)
+if command -v clang >/dev/null && [ -n "$PYLIB" ]; then
+  echo "▶ launcher (clang, $(basename "$PYLIB"))"
+  clang -O2 -Wall -DPY_VER="\"${PY_VER}\"" -arch "$([ "$ARCH" = aarch64 ] && echo arm64 || echo x86_64)" \
+        -mmacosx-version-min=12.0 -o "$APP/Contents/MacOS/BrainAI" launcher.c
+else
+  echo "▶ launcher (shell fallback)"
+  install -m 755 launcher.sh "$APP/Contents/MacOS/BrainAI"
+fi
 cp brainai.py mcp_server.py env.default VERSION "$RES/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$BUILD/python" "$RES/"
 rsync -a "$BUILD/ollama" "$RES/"
@@ -57,6 +66,17 @@ rm -rf "$RES"/python/lib/python*/site-packages/{pip,setuptools,wheel}* \
        "$RES"/python/lib/python*/test "$RES"/python/lib/python*/idlelib 2>/dev/null || true
 
 "$RES/python/bin/python3" make_icon.py "$RES/BrainAI.icns"
+
+# ── 3b. Single-arch: thin fat binaries to $ARCH, drop foreign-arch files (avoids the "Intel support" warning) ──
+echo "▶ thin to $ARCH"
+LIPO_ARCH=$([ "$ARCH" = aarch64 ] && echo arm64 || echo x86_64)
+find "$RES" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 | while IFS= read -r -d '' f; do
+  info=$(file -b "$f" 2>/dev/null) || continue
+  case "$info" in
+    *"Mach-O universal"*) lipo -thin "$LIPO_ARCH" "$f" -output "$f.thin" 2>/dev/null && mv "$f.thin" "$f" ;;
+    *"Mach-O"*"x86_64"*) [ "$LIPO_ARCH" = x86_64 ] || { echo "  drop foreign-arch: ${f#$RES/}"; rm -f "$f"; } ;;
+  esac
+done
 
 # ── 4. Sign ──
 # SIGN_ID: "Developer ID Application: …" (auto-detected from keychain) or "-" for ad-hoc

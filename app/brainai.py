@@ -149,6 +149,54 @@ def ensure_data_dirs():
         os.chmod(ENV_FILE, 0o600)
 
 
+RUN_DIR = DATA / "run"
+
+
+def _write_pid(name, pid):
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    (RUN_DIR / f"{name}.pid").write_text(str(pid))
+
+
+def _kill_stale(name):
+    """Kill a child left over from a previous BrainAI instance (by pidfile + cmdline check)."""
+    f = RUN_DIR / f"{name}.pid"
+    try:
+        pid = int(f.read_text())
+        p = psutil.Process(pid)
+        cmd = " ".join(p.cmdline())
+        if str(RES) in cmd or "lightrag" in cmd or "ollama" in cmd:
+            log(f"killing stale {name} pid={pid}")
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except Exception:
+                p.terminate()
+            try:
+                p.wait(5)
+            except Exception:
+                p.kill()
+    except Exception:
+        pass
+    try:
+        f.unlink()
+    except Exception:
+        pass
+
+
+def acquire_single_instance():
+    """Exit if another BrainAI is already running; otherwise record our pid."""
+    f = RUN_DIR / "brainai.pid"
+    try:
+        pid = int(f.read_text())
+        p = psutil.Process(pid)
+        if pid != os.getpid() and "brainai.py" in " ".join(p.cmdline()):
+            log(f"already running pid={pid}, exiting")
+            notify(APP_NAME, "Already running", "BrainAI is in the menu bar")
+            sys.exit(0)
+    except (FileNotFoundError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
+        pass
+    _write_pid("brainai", os.getpid())
+
+
 def port_open(url, path="/", timeout=2):
     try:
         return httpx.get(url + path, timeout=timeout).status_code < 500
@@ -262,6 +310,7 @@ class Services:
     # ── Ollama ──
 
     def start_ollama(self):
+        _kill_stale("ollama")
         if port_open(OLLAMA_URL, "/api/tags"):
             self.ollama_external = self.ollama_proc is None
             return True
@@ -273,6 +322,7 @@ class Services:
         out = open(LOG_DIR / "ollama.log", "a")
         self.ollama_proc = subprocess.Popen([OLLAMA_BIN, "serve"], env=env, stdout=out, stderr=out,
                                             start_new_session=True)
+        _write_pid("ollama", self.ollama_proc.pid)
         self.ollama_external = False
         for _ in range(30):
             if port_open(OLLAMA_URL, "/api/tags"):
@@ -316,7 +366,9 @@ class Services:
 
     def start_lightrag(self):
         with self._lock:
+            _kill_stale("lightrag")
             if self.lightrag_alive():
+                log("lightrag already answering on port — reusing external instance")
                 return True
             env = dict(os.environ)
             env.update(read_env())
@@ -327,6 +379,7 @@ class Services:
             self.lightrag_proc = subprocess.Popen(
                 [PYTHON, "-c", "from lightrag.api.lightrag_server import main; main()"],
                 cwd=str(DATA), env=env, stdout=out, stderr=out, start_new_session=True)
+            _write_pid("lightrag", self.lightrag_proc.pid)
         for _ in range(60):
             if self.lightrag_alive():
                 return True
@@ -774,6 +827,8 @@ class BrainAIApp(rumps.App):
 
 
 if __name__ == "__main__":
+    ensure_data_dirs()
+    acquire_single_instance()
     app = BrainAIApp()
     try:
         app.run()

@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+.venv/
+*.log
+
+# secrets & private data
+**/.env
+lightrag-legacy/rag_storage/
+lightrag-legacy/rag_storage_backup_*/

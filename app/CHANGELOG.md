@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 — 2026-09-03
+
+- **Per-project isolation.** The server (`brainai_server.py`) keeps one LightRAG instance per project, routed by the `LIGHTRAG-WORKSPACE` header; each project's documents, vectors, graph, doc status and LLM cache live under `rag_storage/<project>/` (upload folder under `inputs/<project>/`). No filter on top of a shared graph — physically separate files
+- MCP server requires `--project <id>` (or `BRAINAI_PROJECT`) and refuses to start without it; it also refuses to talk to a server without project support, so an old server can never silently mix projects
+- Settings → Connect agents writes **project-scoped** MCP configs: Claude Code `.mcp.json`, Cursor `.cursor/mcp.json`, Codex `.codex/config.toml` inside the chosen project folder (id derived from the folder name unless typed). Claude Desktop gets a global config bound to one project
+- Tray: **Project** submenu picks which project the WebUI, document and entity counters show; the choice persists in `.env` (`BRAINAI_UI_PROJECT`)
+- Existing flat `rag_storage/` is moved into project `default` on first start (files renamed in place, nothing re-indexed)
+- Fix MCP tools broken by LightRAG 1.5 API changes: `list_documents` (POST), `get_entity` (`/graph/entity/exists` + neighbourhood), `search_graph` (label search + subgraph), `create_entity` / `create_relation` (nested `entity_data` / `relation_data`), `delete_document` (`doc_ids`)
+- `dev.sh reload` now syncs every bundled `.py` (including `updater.py`, `update_ui.py`, `brainai_server.py`)
+
+
 ## 0.1.3 — 2026-09-03
 
 - Add silent six-hour update checks and a manual **Check for updates…** tray action

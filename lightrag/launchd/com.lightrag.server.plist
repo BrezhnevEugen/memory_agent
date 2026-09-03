@@ -6,7 +6,8 @@
     <string>com.lightrag.server</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/.venv/bin/lightrag-server</string>
+        <string>/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/.venv/bin/python</string>
+        <string>/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/brainai_server.py</string>
     </array>
     <key>WorkingDirectory</key>
     <string>/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag</string>

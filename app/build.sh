@@ -58,7 +58,7 @@ else
   echo "▶ launcher (shell fallback)"
   install -m 755 launcher.sh "$APP/Contents/MacOS/BrainAI"
 fi
-cp brainai.py mcp_server.py updater.py update_ui.py env.default VERSION "$RES/"
+cp brainai.py brainai_server.py mcp_server.py updater.py update_ui.py env.default VERSION "$RES/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$BUILD/python" "$RES/"
 rsync -a "$BUILD/ollama" "$RES/"
 # Strip packaging tools/tests to save space. Keep the patterns exact: `pip*`
@@ -76,7 +76,7 @@ rm -rf "$RES"/python/lib/python*/site-packages/pip \
 (
   cd "$RES"
   ./python/bin/python3 -c \
-    'import certifi, ollama, pipmaster, updater, update_ui; from lightrag.api import lightrag_server; from mcp.server.mcpserver import MCPServer; import mcp_server; assert isinstance(mcp_server.mcp, MCPServer)' \
+    'import certifi, ollama, pipmaster, updater, update_ui; from lightrag.api import lightrag_server; import brainai_server; from mcp.server.mcpserver import MCPServer; import sys; sys.argv += ["--project", "default"]; import mcp_server; assert isinstance(mcp_server.mcp, MCPServer)' \
     >/dev/null
 )
 

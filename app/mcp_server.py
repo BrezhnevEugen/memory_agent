@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
 """
-LightRAG MCP Server
-===================
+LightRAG MCP Server (BrainAI)
+=============================
 Exposes LightRAG functionality via the Model Context Protocol (MCP),
 allowing Claude and other MCP clients to query the knowledge graph,
 insert documents, and manage the graph through tool calls.
 
-Requires a running LightRAG API server (default: http://localhost:9621).
+Every MCP process is bound to exactly one BrainAI *project*: all requests carry
+the ``LIGHTRAG-WORKSPACE`` header, and the BrainAI server keeps each project's
+documents, vectors and graph in its own directory. Without a project id the
+server refuses to start (fail-closed) so two projects can never share a graph
+by accident. Put the id into the project-scoped MCP config of each agent
+(Claude Code ``.mcp.json``, Cursor ``.cursor/mcp.json``, Codex ``.codex/config.toml``)
+or use BrainAI Settings → Connect agents.
+
+Requires a running BrainAI/LightRAG server (default: http://localhost:9621).
 
 Usage:
-    python mcp_server.py [--lightrag-url http://localhost:9621]
+    python mcp_server.py --project <id> [--lightrag-url http://localhost:9621]
+    BRAINAI_PROJECT=<id> python mcp_server.py
 """
 
 import argparse
 import json
+import os
+import re
 import sys
 from typing import Any
 
@@ -25,24 +36,50 @@ from mcp.server.mcpserver import MCPServer
 # ---------------------------------------------------------------------------
 
 DEFAULT_LIGHTRAG_URL = "http://localhost:9621"
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+PROJECT_HEADER = "LIGHTRAG-WORKSPACE"
 
-parser = argparse.ArgumentParser(description="LightRAG MCP Server")
+parser = argparse.ArgumentParser(description="LightRAG MCP Server (BrainAI)")
 parser.add_argument(
     "--lightrag-url",
     default=DEFAULT_LIGHTRAG_URL,
     help=f"Base URL of the LightRAG API server (default: {DEFAULT_LIGHTRAG_URL})",
 )
+parser.add_argument(
+    "--project",
+    default=os.environ.get("BRAINAI_PROJECT", ""),
+    help="BrainAI project id this MCP process is bound to ([a-z0-9_], max 64). "
+         "Required; may also come from BRAINAI_PROJECT.",
+)
 # Parse known args only so MCP transport flags don't cause errors
 args, _ = parser.parse_known_args()
 
 LIGHTRAG_URL = args.lightrag_url.rstrip("/")
+PROJECT = args.project.strip()
+
+if not PROJECT:
+    print(
+        "BrainAI MCP: no project id. Start with `--project <id>` (or BRAINAI_PROJECT=<id>) "
+        "from a project-scoped MCP config, or use BrainAI Settings → Connect agents.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+if not PROJECT_RE.match(PROJECT):
+    print(
+        f"BrainAI MCP: invalid project id {PROJECT!r}: lowercase [a-z0-9_], max 64 chars, "
+        "must start with a letter or digit.",
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 mcp = MCPServer(
     "LightRAG",
     instructions=(
-        "LightRAG MCP server provides tools to interact with a graph-based "
-        "RAG (Retrieval-Augmented Generation) system. You can query the "
-        "knowledge base, insert documents, and manage the knowledge graph."
+        f"LightRAG MCP server bound to BrainAI project '{PROJECT}'. Provides tools to "
+        "interact with a graph-based RAG (Retrieval-Augmented Generation) memory: "
+        "query the knowledge base, insert documents, and manage the knowledge graph. "
+        "Everything you read or write here stays inside this project; other projects "
+        "have their own isolated graphs."
     ),
 )
 
@@ -50,12 +87,42 @@ mcp = MCPServer(
 # Helpers
 # ---------------------------------------------------------------------------
 
+_isolation_verified = False
+
+
 def _client() -> httpx.AsyncClient:
-    return httpx.AsyncClient(base_url=LIGHTRAG_URL, timeout=300)
+    return httpx.AsyncClient(
+        base_url=LIGHTRAG_URL, timeout=300, headers={PROJECT_HEADER: PROJECT}
+    )
+
+
+async def _verify_isolation(c: httpx.AsyncClient) -> None:
+    """Fail closed if the server is not the BrainAI project-aware build.
+
+    A plain lightrag-server ignores the workspace header on every data route and
+    would silently mix all projects into one graph.
+    """
+    global _isolation_verified
+    if _isolation_verified:
+        return
+    try:
+        r = await c.get("/brainai/projects", timeout=10)
+    except httpx.ConnectError as e:
+        raise RuntimeError(
+            f"BrainAI server is not running at {LIGHTRAG_URL} (start BrainAI.app)."
+        ) from e
+    if r.status_code != 200:
+        raise RuntimeError(
+            f"Server at {LIGHTRAG_URL} does not support per-project isolation "
+            f"(/brainai/projects → {r.status_code}); refusing to use project '{PROJECT}'. "
+            "Update BrainAI.app or start the server with brainai_server.py."
+        )
+    _isolation_verified = True
 
 
 async def _post(path: str, payload: dict) -> dict:
     async with _client() as c:
+        await _verify_isolation(c)
         r = await c.post(path, json=payload)
         r.raise_for_status()
         return r.json()
@@ -63,6 +130,7 @@ async def _post(path: str, payload: dict) -> dict:
 
 async def _get(path: str, params: dict | None = None) -> Any:
     async with _client() as c:
+        await _verify_isolation(c)
         r = await c.get(path, params=params)
         r.raise_for_status()
         return r.json()
@@ -70,6 +138,7 @@ async def _get(path: str, params: dict | None = None) -> Any:
 
 async def _delete(path: str, payload: dict | None = None) -> dict:
     async with _client() as c:
+        await _verify_isolation(c)
         if payload:
             r = await c.request("DELETE", path, json=payload)
         else:
@@ -90,7 +159,7 @@ async def query(
     only_need_context: bool = False,
     include_references: bool = True,
 ) -> str:
-    """Query the LightRAG knowledge base.
+    """Query the LightRAG knowledge base of the current project.
 
     Searches the knowledge graph and text chunks to answer questions
     using retrieval-augmented generation.
@@ -152,18 +221,18 @@ async def insert_text(
     text: str,
     description: str = "",
 ) -> str:
-    """Insert text content into the LightRAG knowledge base.
+    """Insert text content into the current project's LightRAG knowledge base.
 
     The text will be chunked, entities and relations will be extracted,
     and the knowledge graph will be updated.
 
     Args:
         text: The text content to insert (at least a few sentences).
-        description: Optional description of the document.
+        description: Optional label/source of the document (shown as its file path).
     """
     payload = {"text": text}
     if description:
-        payload["description"] = description
+        payload["file_source"] = description
     result = await _post("/documents/text", payload)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
@@ -174,7 +243,7 @@ async def list_documents(
     page_size: int = 20,
     status: str = "",
 ) -> str:
-    """List documents in the LightRAG knowledge base.
+    """List documents in the current project's knowledge base.
 
     Args:
         page: Page number (starting from 1).
@@ -182,10 +251,10 @@ async def list_documents(
         status: Filter by status — "" (all), "pending", "processing",
                 "processed", "failed".
     """
-    params: dict[str, Any] = {"page": page, "page_size": page_size}
+    payload: dict[str, Any] = {"page": page, "page_size": max(10, min(page_size, 200))}
     if status:
-        params["status"] = status
-    result = await _get("/documents/paginated", params)
+        payload["status_filter"] = status
+    result = await _post("/documents/paginated", payload)
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -199,7 +268,7 @@ async def delete_document(doc_id: str) -> str:
     Args:
         doc_id: The document ID to delete.
     """
-    result = await _delete("/documents", {"ids": [doc_id]})
+    result = await _delete("/documents", {"doc_ids": [doc_id]})
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -223,17 +292,20 @@ async def search_graph(
     search_text: str = "",
     max_items: int = 50,
 ) -> str:
-    """Search the knowledge graph for entities or relations.
+    """Search the knowledge graph: entity names matching a text, or the subgraph around an entity.
 
     Args:
-        label: Entity or relation type/label to search within.
-        search_text: Text to search for (searches names and descriptions).
-        max_items: Maximum number of results to return.
+        label: Entity name to start from; returns its neighbourhood (nodes + edges).
+               Use "*" together with search_text to search entity names only.
+        search_text: Text to search for in entity names (fuzzy). When given, the
+               matching names are returned in addition to the subgraph.
+        max_items: Maximum number of nodes / matches to return.
     """
-    params: dict[str, Any] = {"label": label, "max_items": max_items}
+    result: dict[str, Any] = {}
     if search_text:
-        params["search"] = search_text
-    result = await _get("/graph/search", params)
+        result["matches"] = await _get("/graph/label/search", {"q": search_text, "limit": max_items})
+    if label and label != "*":
+        result["subgraph"] = await _get("/graphs", {"label": label, "max_depth": 2, "max_nodes": max_items})
     return json.dumps(result, ensure_ascii=False, indent=2)
 
 
@@ -246,8 +318,13 @@ async def get_entity(entity_name: str) -> str:
     Args:
         entity_name: Name of the entity to look up.
     """
-    result = await _get("/graph/entity/exist", params={"entity_name": entity_name})
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    exists = await _get("/graph/entity/exists", params={"name": entity_name})
+    if not exists.get("exists"):
+        return json.dumps({"exists": False, "entity_name": entity_name}, ensure_ascii=False)
+    graph = await _get("/graphs", {"label": entity_name, "max_depth": 1, "max_nodes": 50})
+    node = next((n for n in graph.get("nodes", []) if n.get("id") == entity_name), None)
+    return json.dumps({"exists": True, "entity": node, "edges": graph.get("edges", [])},
+                      ensure_ascii=False, indent=2)
 
 
 @mcp.tool()
@@ -267,9 +344,11 @@ async def create_entity(
     """
     payload = {
         "entity_name": entity_name,
-        "entity_type": entity_type,
-        "description": description,
-        "source_id": source_id,
+        "entity_data": {
+            "entity_type": entity_type,
+            "description": description,
+            "source_id": source_id,
+        },
     }
     result = await _post("/graph/entity/create", payload)
     return json.dumps(result, ensure_ascii=False, indent=2)
@@ -285,6 +364,8 @@ async def create_relation(
 ) -> str:
     """Create a relation (edge) between two entities in the knowledge graph.
 
+    Both entities must already exist (create them with create_entity first).
+
     Args:
         src_entity: Name of the source entity.
         tgt_entity: Name of the target entity.
@@ -293,11 +374,13 @@ async def create_relation(
         source_id: Source identifier for tracking.
     """
     payload = {
-        "src_id": src_entity,
-        "tgt_id": tgt_entity,
-        "description": description,
-        "keywords": keywords,
-        "source_id": source_id,
+        "source_entity": src_entity,
+        "target_entity": tgt_entity,
+        "relation_data": {
+            "description": description,
+            "keywords": keywords,
+            "source_id": source_id,
+        },
     }
     result = await _post("/graph/relation/create", payload)
     return json.dumps(result, ensure_ascii=False, indent=2)
@@ -320,12 +403,13 @@ async def delete_entity(entity_name: str) -> str:
 
 @mcp.tool()
 async def health_check() -> str:
-    """Check if the LightRAG server is running and get its configuration.
+    """Check if the BrainAI/LightRAG server is running and get its configuration.
 
-    Returns server status, LLM/embedding configuration, and storage info.
+    Returns the bound project, server status, LLM/embedding configuration
+    and storage info.
     """
     result = await _get("/health")
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps({"project": PROJECT, "server": result}, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------
@@ -334,9 +418,9 @@ async def health_check() -> str:
 
 @mcp.resource("lightrag://status")
 async def server_status() -> str:
-    """Current LightRAG server status and configuration."""
+    """Current LightRAG server status and configuration for this project."""
     result = await _get("/health")
-    return json.dumps(result, ensure_ascii=False, indent=2)
+    return json.dumps({"project": PROJECT, "server": result}, ensure_ascii=False, indent=2)
 
 
 # ---------------------------------------------------------------------------

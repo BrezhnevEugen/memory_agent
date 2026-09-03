@@ -8,12 +8,16 @@ Manages three things without launchd or system-wide installs:
   * MCP server config for agents (Cowork / Cursor / Claude Code)
 
 Layout inside BrainAI.app/Contents/Resources:
-  brainai.py, mcp_server.py, updater.py, update_ui.py, env.default
+  brainai.py, brainai_server.py, mcp_server.py, updater.py, update_ui.py, env.default
   python/            relocatable CPython with lightrag-hku[api], rumps, pyobjc…
   ollama/ollama      Ollama binary
 
 User data (never inside the bundle):
-  ~/Library/Application Support/BrainAI/{.env, rag_storage, inputs, logs, ollama/models}
+  ~/Library/Application Support/BrainAI/{.env, rag_storage/<project>, inputs/<project>, logs, ollama/models}
+
+Projects: every MCP client is bound to one project id ([a-z0-9_]); the server keeps each
+project's documents, vectors and graph under rag_storage/<project>/. The tray picks the
+project shown in the WebUI and counters (BRAINAI_UI_PROJECT in .env).
 
 Runs from source too (dev mode): python3 brainai.py — uses sys.executable and `ollama` from PATH.
 """
@@ -22,6 +26,7 @@ import fcntl
 import json
 import os
 import pathlib
+import re
 import shutil
 import signal
 import subprocess
@@ -39,9 +44,10 @@ from AppKit import (
     NSWindow, NSWindowStyleMaskTitled, NSWindowStyleMaskClosable,
     NSBackingStoreBuffered, NSTextField, NSButton, NSPopUpButton, NSBox,
     NSApp, NSObject, NSSecureTextField, NSBezelStyleRounded, NSPasteboard,
-    NSPasteboardTypeString, NSButtonTypeSwitch,
+    NSPasteboardTypeString, NSButtonTypeSwitch, NSOpenPanel, NSModalResponseOK,
 )
 from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
+from PyObjCTools import AppHelper
 
 # ─────────────────────────────────────────────────────────
 # Paths & constants
@@ -55,7 +61,11 @@ APP_BUNDLE = RES.parent.parent if IN_BUNDLE else None
 PYTHON = str(RES / "python" / "bin" / "python3") if IN_BUNDLE else sys.executable
 OLLAMA_BIN = str(RES / "ollama" / "ollama") if IN_BUNDLE else (shutil.which("ollama") or "ollama")
 MCP_SERVER = str(RES / "mcp_server.py")
+SERVER_SCRIPT = str(RES / "brainai_server.py")
 ENV_DEFAULT = RES / "env.default"
+
+PROJECT_RE = re.compile(r"^[a-z0-9][a-z0-9_]{0,63}$")
+DEFAULT_PROJECT = "default"
 try:
     VERSION = (RES / "VERSION").read_text().strip()
 except Exception:
@@ -153,6 +163,50 @@ def ensure_data_dirs():
     if not ENV_FILE.exists():
         shutil.copy(ENV_DEFAULT, ENV_FILE)
         os.chmod(ENV_FILE, 0o600)
+
+
+# ── projects ──
+
+def valid_project(value):
+    return isinstance(value, str) and bool(PROJECT_RE.match(value))
+
+
+def project_id_from_name(name):
+    """Derive a project id from a folder name: lowercase, [a-z0-9_] only."""
+    pid = re.sub(r"[^a-z0-9_]+", "_", name.strip().lower()).strip("_")[:64]
+    if not pid:
+        pid = "project"  # never fall back to the shared default project by accident
+    return pid[:64]
+
+
+def ui_project():
+    value = read_env().get("BRAINAI_UI_PROJECT", "")
+    return value if valid_project(value) else DEFAULT_PROJECT
+
+
+def list_projects():
+    ids = {ui_project()}
+    try:
+        for p in (DATA / "rag_storage").iterdir():
+            if p.is_dir() and valid_project(p.name):
+                ids.add(p.name)
+    except OSError:
+        pass
+    return sorted(ids)
+
+
+def migrate_legacy_storage():
+    """Move a pre-project (flat) rag_storage into rag_storage/default/. Returns True if moved."""
+    root = DATA / "rag_storage"
+    target = root / DEFAULT_PROJECT
+    legacy = [p for p in root.iterdir() if p.is_file() and p.suffix in (".json", ".graphml")]
+    if not legacy or target.exists():
+        return False
+    target.mkdir()
+    for p in legacy:
+        p.rename(target / p.name)
+    log(f"migrated {len(legacy)} legacy storage files into project '{DEFAULT_PROJECT}'")
+    return True
 
 
 def load_update_state():
@@ -311,45 +365,59 @@ def make_button(title, frame, target, action):
     return b
 
 
-def mcp_entry():
-    return {"command": PYTHON, "args": [MCP_SERVER, "--lightrag-url", LIGHTRAG_URL]}
+def mcp_entry(project):
+    if not valid_project(project):
+        raise ValueError(f"invalid project id {project!r}: lowercase [a-z0-9_], max 64 chars")
+    return {"command": PYTHON, "args": [MCP_SERVER, "--lightrag-url", LIGHTRAG_URL, "--project", project]}
 
 
-def mcp_config():
-    return json.dumps({"mcpServers": {"lightrag": mcp_entry()}}, indent=2)
+def mcp_config(project):
+    return json.dumps({"mcpServers": {"lightrag": mcp_entry(project)}}, indent=2)
 
 
 HOME = pathlib.Path.home()
+# name: (relative config path, kind, scope)
+#   kind:  json → {"mcpServers": {...}}, toml → [mcp_servers.lightrag]
+#   scope: global → path under $HOME; project → path under the chosen project folder
 MCP_TARGETS = {
-    # name: (path, kind)   kind: json → {"mcpServers": {...}}, toml → [mcp_servers.lightrag]
-    "Claude Desktop": (HOME / "Library" / "Application Support" / "Claude" / "claude_desktop_config.json", "json"),
-    "Claude Code": (HOME / ".claude.json", "json"),
-    "Cursor": (HOME / ".cursor" / "mcp.json", "json"),
-    "Codex": (HOME / ".codex" / "config.toml", "toml"),
+    "Claude Desktop": (pathlib.Path("Library/Application Support/Claude/claude_desktop_config.json"), "json", "global"),
+    "Claude Code": (pathlib.Path(".mcp.json"), "json", "project"),
+    "Cursor": (pathlib.Path(".cursor/mcp.json"), "json", "project"),
+    "Codex": (pathlib.Path(".codex/config.toml"), "toml", "project"),
 }
 
 
-def install_mcp(name):
-    """Merge the lightrag MCP server into an agent's config. Returns path written."""
-    import re
-    path, kind = MCP_TARGETS[name]
+def install_mcp(name, project, folder=None):
+    """Merge the lightrag MCP server (bound to `project`) into an agent's config. Returns path written.
+
+    Project-scoped agents (Claude Code, Cursor, Codex) get the config inside `folder`, so each
+    project folder carries its own project id; Claude Desktop has no project notion and gets a
+    global config bound to `project`.
+    """
+    rel, kind, scope = MCP_TARGETS[name]
+    if scope == "project":
+        if folder is None:
+            raise ValueError(f"{name} needs a project folder")
+        path = pathlib.Path(folder) / rel
+    else:
+        path = HOME / rel
     path.parent.mkdir(parents=True, exist_ok=True)
     if kind == "json":
         try:
             data = json.loads(path.read_text()) if path.exists() else {}
         except Exception:
             data = {}
-        data.setdefault("mcpServers", {})["lightrag"] = mcp_entry()
+        data.setdefault("mcpServers", {})["lightrag"] = mcp_entry(project)
         path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
     else:
         text = path.read_text() if path.exists() else ""
         # drop existing [mcp_servers.lightrag] section: header line up to the next table header
         text = re.sub(r"^\[mcp_servers\.lightrag\]\n(?:(?!^\[).*\n?)*", "", text, flags=re.M)
         text = text.rstrip() + "\n" if text.strip() else ""
-        args = ", ".join(json.dumps(a) for a in mcp_entry()["args"])
+        args = ", ".join(json.dumps(a) for a in mcp_entry(project)["args"])
         text += f'\n[mcp_servers.lightrag]\ncommand = {json.dumps(PYTHON)}\nargs = [{args}]\n'
         path.write_text(text)
-    log(f"MCP installed for {name}: {path}")
+    log(f"MCP installed for {name} (project '{project}'): {path}")
     return path
 
 
@@ -402,7 +470,8 @@ class Services:
         )
         if is_bundled_python:
             command = " ".join(cmdline[1:])
-            if "from lightrag.api.lightrag_server import main; main()" in command:
+            if ("from lightrag.api.lightrag_server import main; main()" in command
+                    or command.endswith(f"{os.sep}brainai_server.py")):
                 return "lightrag"
         return None
 
@@ -497,10 +566,12 @@ class Services:
         env.update(read_env())
         env.update(WORKING_DIR=str(DATA / "rag_storage"), INPUT_DIR=str(DATA / "inputs"),
                    HOST="127.0.0.1", PORT=str(LIGHTRAG_PORT),
-                   EMBEDDING_BINDING_HOST=OLLAMA_URL, PYTHONUNBUFFERED="1")
+                   EMBEDDING_BINDING_HOST=OLLAMA_URL, PYTHONUNBUFFERED="1",
+                   BRAINAI_UI_PROJECT=ui_project())
+        env.pop("WORKSPACE", None)  # projects are routed per request, never fixed per process
         out = open(LOG_DIR / "server.log", "a")
         proc = subprocess.Popen(
-            [PYTHON, "-c", "from lightrag.api.lightrag_server import main; main()"],
+            [PYTHON, SERVER_SCRIPT],
             cwd=str(DATA), env=env, stdout=out, stderr=out, start_new_session=True)
         with self._lock:
             if self.stopping:
@@ -608,7 +679,7 @@ class SettingsDelegate(NSObject):
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 480, 470
+        W, H = 480, 560
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, False)
@@ -648,6 +719,11 @@ class SettingsDelegate(NSObject):
         y -= 40
 
         cv.addSubview_(make_label("Connect agents (MCP)", NSMakeRect(20, y, 300, 20), bold=True))
+        y -= 30
+        cv.addSubview_(make_label("Project id", NSMakeRect(20, y + 2, 80, 20)))
+        self.project_field = NSTextField.alloc().initWithFrame_(NSMakeRect(100, y, 360, 24))
+        self.project_field.setPlaceholderString_("empty = folder name  (a-z, 0-9, _)")
+        cv.addSubview_(self.project_field)
         y -= 32
         bw = 105
         for i, (title, sel) in enumerate([
@@ -657,8 +733,14 @@ class SettingsDelegate(NSObject):
             ("Codex", "installCodex:"),
         ]):
             cv.addSubview_(make_button(title, NSMakeRect(20 + i * (bw + 7), y, bw, 28), self, sel))
-        y -= 34
-        cv.addSubview_(make_label("Writes the lightrag server into each app's MCP config; restart the app afterwards.",
+        y -= 30
+        cv.addSubview_(make_label("Claude Code / Cursor / Codex: pick the project folder; its .mcp.json / .cursor/mcp.json /",
+                                  NSMakeRect(20, y, 440, 16), size=11.0))
+        y -= 16
+        cv.addSubview_(make_label(".codex/config.toml gets the lightrag server bound to that project. Each project has its own graph.",
+                                  NSMakeRect(20, y, 440, 16), size=11.0))
+        y -= 16
+        cv.addSubview_(make_label("Claude Desktop: global config bound to the project id above (default: 'default'). Restart the app.",
                                   NSMakeRect(20, y, 440, 16), size=11.0))
         y -= 34
         cv.addSubview_(make_button("📋 Copy config", NSMakeRect(20, y, 140, 28), self, "copyMcp:"))
@@ -712,10 +794,40 @@ class SettingsDelegate(NSObject):
         notify(APP_NAME, "Test notification", "Notifications are working!")
 
     @objc.python_method
+    def _project_from_field(self):
+        pid = self.project_field.stringValue().strip()
+        if pid and not valid_project(pid):
+            raise ValueError(f"invalid project id {pid!r}: lowercase a-z, 0-9, _ (max 64)")
+        return pid
+
+    @objc.python_method
+    def _choose_folder(self, message):
+        panel = NSOpenPanel.openPanel()
+        panel.setCanChooseDirectories_(True)
+        panel.setCanChooseFiles_(False)
+        panel.setAllowsMultipleSelection_(False)
+        panel.setMessage_(message)
+        panel.setPrompt_("Use folder")
+        if panel.runModal() != NSModalResponseOK:
+            return None
+        return panel.URLs()[0].path()
+
+    @objc.python_method
     def _install(self, name):
         try:
-            p = install_mcp(name)
-            notify(APP_NAME, f"MCP added to {name}", f"{p.name} updated — restart {name}")
+            pid = self._project_from_field()
+            scope = MCP_TARGETS[name][2]
+            folder = None
+            if scope == "project":
+                folder = self._choose_folder(f"Choose the project folder for {name}")
+                if folder is None:
+                    return
+                pid = pid or project_id_from_name(pathlib.Path(folder).name)
+            else:
+                pid = pid or DEFAULT_PROJECT
+            p = install_mcp(name, pid, folder)
+            hint = "project must be trusted in Codex; " if name == "Codex" else ""
+            notify(APP_NAME, f"{name} → project '{pid}'", f"{hint}restart {name}. {p}")
         except Exception as e:
             notify(APP_NAME, f"{name}: failed", str(e)[:120])
 
@@ -737,10 +849,15 @@ class SettingsDelegate(NSObject):
 
     @objc.IBAction
     def copyMcp_(self, sender):
+        try:
+            pid = self._project_from_field() or DEFAULT_PROJECT
+        except ValueError as e:
+            notify(APP_NAME, "Copy config: failed", str(e)[:120])
+            return
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()
-        pb.setString_forType_(mcp_config(), NSPasteboardTypeString)
-        notify(APP_NAME, "MCP config copied", "Paste into Cursor / Claude MCP settings")
+        pb.setString_forType_(mcp_config(pid), NSPasteboardTypeString)
+        notify(APP_NAME, f"MCP config copied (project '{pid}')", "Paste into the agent's project-scoped MCP config")
 
     @objc.IBAction
     def applySettings_(self, sender):
@@ -803,6 +920,7 @@ class BrainAIApp(rumps.App):
         self.model_item = item("  Model: —")
         self.docs_item = item("  Documents: —")
         self.entities_item = item("  Entities: —")
+        self.project_item = rumps.MenuItem(f"📁 Project: {ui_project()}")
         self.ram_item = item("  RAM: —")
         self.toggle_item = rumps.MenuItem("⏹ Stop Server", callback=self.toggle_server)
         self.webui_item = rumps.MenuItem("🌐 Open WebUI", callback=self.open_webui)
@@ -813,7 +931,7 @@ class BrainAIApp(rumps.App):
         self.menu = [
             self.header, rumps.separator,
             self.status_item, self.api_item, self.ollama_item, self.model_item,
-            self.docs_item, self.entities_item, rumps.separator,
+            self.project_item, self.docs_item, self.entities_item, rumps.separator,
             self.ram_item, rumps.separator,
             self.toggle_item, self.webui_item, rumps.separator,
             self.update_item, self.settings_item, self.quit_item,
@@ -827,8 +945,10 @@ class BrainAIApp(rumps.App):
         self._last_docs = None
         self._last_entities = None
         self._last_status_counts = {}
+        self._project_menu_ids = None
         self._total_ram = psutil.virtual_memory().total / (1024 ** 3)
         self._settings = SettingsDelegate.alloc().initWithApp_(self)
+        self._refresh_project_menu(list_projects(), ui_project())
 
         threading.Thread(target=self._bootstrap, daemon=True).start()
         self._update_timer = threading.Timer(5.0, self._autocheck_updates_background)
@@ -864,6 +984,13 @@ class BrainAIApp(rumps.App):
     def start_server(self):
         self.status_item.title = "  ⏳ Starting LightRAG…"
         self._user_stopped = False
+        try:
+            if migrate_legacy_storage():
+                notify(APP_NAME, "Storage migrated", f"Existing memory is now project '{DEFAULT_PROJECT}'")
+        except Exception as e:
+            log(f"legacy storage migration failed: {e}")
+            notify(APP_NAME, "Storage migration failed", str(e)[:120])
+            return
         ok = self.services.start_lightrag()
         if not ok:
             notify(APP_NAME, "LightRAG failed to start", "See Settings → Server log")
@@ -926,7 +1053,51 @@ class BrainAIApp(rumps.App):
             pass
         self._update_ui()
 
+    def _refresh_project_menu(self, ids, current):
+        """Rebuild the Project submenu (only when the list or selection changed)."""
+        key = (tuple(ids), current)
+        if key == self._project_menu_ids:
+            return
+        if threading.current_thread() is not threading.main_thread():
+            # NSMenu mutations must happen on the main thread (pollers run in threads).
+            AppHelper.callAfter(self._refresh_project_menu, ids, current)
+            return
+        self._project_menu_ids = key
+        self.project_item.title = f"📁 Project: {current}"
+        self.project_item.clear()
+        for pid in ids:
+            mi = rumps.MenuItem(pid, callback=self._select_project)
+            mi.state = 1 if pid == current else 0
+            self.project_item.add(mi)
+
+    def _select_project(self, sender):
+        pid = sender.title
+        if not valid_project(pid) or pid == ui_project():
+            return
+
+        def switch():
+            try:
+                r = httpx.post(f"{LIGHTRAG_URL}/brainai/ui-project", json={"project": pid}, timeout=30)
+                r.raise_for_status()
+            except Exception as e:
+                notify(APP_NAME, "Project switch failed", str(e)[:120])
+                return
+            write_env_value("BRAINAI_UI_PROJECT", pid)
+            self._last_docs = self._last_entities = None
+            self._last_status_counts = {}
+            self._refresh_project_menu(list_projects(), pid)
+            self._check_documents()
+            notify(APP_NAME, f"Project: {pid}", "WebUI and counters now show this project")
+
+        threading.Thread(target=switch, daemon=True).start()
+
     def _check_documents(self):
+        try:
+            info = httpx.get(f"{LIGHTRAG_URL}/brainai/projects", timeout=5).json()
+            ids = sorted({p["id"] for p in info.get("projects", [])} | set(list_projects()))
+            self._refresh_project_menu(ids, info.get("ui_project", ui_project()))
+        except Exception as e:
+            log(f"project poll: {e}")
         try:
             d = httpx.post(f"{LIGHTRAG_URL}/documents/paginated", json={"page": 1, "page_size": 10}, timeout=5).json()
             total = d.get("pagination", {}).get("total_count", 0)

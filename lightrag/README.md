@@ -21,7 +21,8 @@ Server: http://localhost:9621 (WebUI, `/docs`, `/health`).
 | `.env.example` | Server config template; `.env` is git-ignored |
 | `install.sh` | venv + `lightrag-hku[api]` + launchd |
 | `launchd/*.plist` | `com.lightrag.server` (KeepAlive), `com.lightrag.tray` |
-| `mcp_server.py` | MCP (stdio) → LightRAG REST; tools: query, insert_text, create_entity/relation, … |
+| `brainai_server.py` | Server entry used by launchd: one LightRAG instance per project (copy of `app/brainai_server.py`) |
+| `mcp_server.py` | MCP (stdio) → LightRAG REST, bound to one project via `--project`; tools: query, insert_text, create_entity/relation, … |
 | `lightrag_tray.py` | Menu bar app: server/API status, model switch, docs/entities count, notifications |
 | `rag_storage/` | Graph data (git-ignored) |
 | `logs/` | launchd stdout/stderr |
@@ -30,10 +31,12 @@ This MCP connection is separate from an agent's native file-based auto-memory. I
 
 ## MCP client config
 
+Project-scoped (`.mcp.json` in the project folder for Claude Code, `.cursor/mcp.json` for Cursor); `--project` is mandatory and each project gets its own `rag_storage/<id>/`:
+
 ```json
 { "mcpServers": { "lightrag": {
   "command": "/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/.venv/bin/python",
-  "args": ["/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/mcp_server.py", "--lightrag-url", "http://localhost:9621"]
+  "args": ["/Users/eugenbrezhnev/dev_soft/memory_agent/lightrag/mcp_server.py", "--lightrag-url", "http://localhost:9621", "--project", "memory_agent"]
 }}}
 ```
 

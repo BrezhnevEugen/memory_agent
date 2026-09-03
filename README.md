@@ -4,16 +4,20 @@ A macOS menu bar app that gives Claude, Cursor and Codex a shared long-term memo
 
 Every chat session is ephemeral. BrainAI is not. Decisions, bug fixes, configs, preferences — an agent saves them during work and finds them again in the next session, in any tool.
 
+Memory is split into **projects** that never overlap: each project has its own documents, vectors and graph on disk, and every MCP connection is bound to exactly one project.
+
 **[⬇ Download the latest BrainAI release](https://github.com/BrezhnevEugen/memory_agent/releases/latest)** · macOS 12+, Apple Silicon
 
 ## How it works
 
 ```
 Claude Desktop / Claude Code / Cursor / Codex
-            │  MCP (stdio)
+            │  MCP (stdio), one process per project (--project <id>)
             ▼
    ┌─────────────────────────── BrainAI.app ───────────────────────────┐
-   │  mcp_server.py  →  LightRAG server (:9621)  →  knowledge graph    │
+   │  mcp_server.py ─(LIGHTRAG-WORKSPACE: <id>)→ brainai_server.py     │
+   │                        │  LightRAG instance per project           │
+   │                        │  rag_storage/<id>/ docs, vectors, graph  │
    │                        │ LLM: DeepSeek API (entities, relations,  │
    │                        │      answers)                            │
    │                        │ Embeddings: bundled Ollama + bge-m3      │
@@ -28,19 +32,27 @@ Everything ships inside the `.app`: relocatable Python, LightRAG, the Ollama bin
 1. Open the DMG, drag **BrainAI** to Applications, launch it.
 2. First run downloads the `bge-m3` embedding model (~1.2 GB, progress in the menu bar).
 3. Settings opens → paste your DeepSeek API key (**Get** opens the key page) → **Apply**.
-4. Settings → **Connect agents** → click Claude Desktop / Claude Code / Cursor / Codex. Restart that app.
+4. Settings → **Connect agents** → click Claude Code / Cursor / Codex and pick the project folder: BrainAI writes the project-scoped MCP config (`.mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`) bound to a project id derived from the folder name (or the id you typed). Claude Desktop has no folders, so it gets a global config bound to one project (`default` unless you type another). Restart that app.
 
-The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`.
+The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`. The **Project** submenu chooses which project the WebUI and the counters show.
+
+## Projects
+
+- A project id is lowercase `[a-z0-9_]`, max 64 characters (`memory_agent`, `work_crm`, `default`).
+- Every MCP process is started with `--project <id>` and sends it as the `LIGHTRAG-WORKSPACE` header on each request. Without an id the MCP server exits; against a server that lacks project support it refuses every call. There is no shared fallback.
+- The server keeps one LightRAG instance per project. Storage is physically separate: `rag_storage/<id>/` (documents, chunks, vectors, graph, doc status, LLM cache) and `inputs/<id>/` (uploads). Projects are created on first use; delete a project by removing its folder while the server is stopped.
+- Memory that existed before 0.2.0 is moved into project `default` on first start.
+- Codex loads a project-level `.codex/config.toml` only for trusted projects.
 
 BrainAI silently checks for a new GitHub release at most once every six hours. **Check for updates…** downloads and installs a signed, notarized DMG in place after verifying its SHA-256 checksum and Developer ID; the previous app is restored automatically if the swap fails.
 
-Data lives in `~/Library/Application Support/BrainAI/` (`.env`, `rag_storage/`, `logs/`, `ollama/models/`). If you already run Ollama on `:11434`, BrainAI reuses it.
+Data lives in `~/Library/Application Support/BrainAI/` (`.env`, `rag_storage/<project>/`, `inputs/<project>/`, `logs/`, `ollama/models/`). If you already run Ollama on `:11434`, BrainAI reuses it.
 
 ## What agents get
 
 MCP tools: `query`, `query_data`, `insert_text`, `create_entity`, `create_relation`, `search_graph`, `get_entity`, `get_graph_labels`, `list_documents`, `delete_document`, `delete_entity`, `health_check`.
 
-A companion [memory skill](lightrag-legacy/memory-skill-unpacked/memory/SKILL.md) tells the agent *when* to read and write: query at the start of non-trivial tasks, save decisions/bugs/configs afterwards, tag entries by domain (`work/`, `personal-project/`, `hobby-esp32/`…), write in English with dates.
+A companion [memory skill](lightrag-legacy/memory-skill-unpacked/memory/SKILL.md) tells the agent *when* to read and write: query at the start of non-trivial tasks, save decisions/bugs/configs afterwards, tag entries by domain (`work/`, `personal-project/`, `hobby-esp32/`…), write in English with dates. Since 0.2.0 the hard boundary between projects is the project id, not the domain tag; tags remain useful inside a project.
 
 BrainAI does not replace an agent's native file-based auto-memory. It exposes a separate MCP server whose tools appear under the `mcp__lightrag__*` namespace. Without the companion memory skill (or explicit instructions), the agent will not automatically mirror its private file memory into the LightRAG graph.
 

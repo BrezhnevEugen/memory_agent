@@ -21,19 +21,29 @@ Downloads at build time: python-build-standalone (~30 MB), `lightrag-hku[api]` +
 1. Drag BrainAI.app to Applications. Unsigned build → right-click → Open (or `xattr -dr com.apple.quarantine /Applications/BrainAI.app`).
 2. App starts bundled Ollama, pulls `bge-m3`, then opens Settings.
 3. Enter DeepSeek API key (button **Get** opens the keys page) → Apply. Server starts on `http://127.0.0.1:9621`.
-4. Settings → **Connect agents**: one click writes the `lightrag` MCP server into Claude Desktop (`claude_desktop_config.json`), Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`) or Codex (`~/.codex/config.toml`). Restart that app. **Copy config** puts the JSON on the clipboard for anything else.
+4. Settings → **Connect agents**: Claude Code / Cursor / Codex ask for the project folder and write the `lightrag` MCP server, bound to that project id, into `<folder>/.mcp.json`, `<folder>/.cursor/mcp.json` or `<folder>/.codex/config.toml` (Codex reads it only for trusted projects). Claude Desktop gets the global `claude_desktop_config.json` bound to the id in the **Project id** field (`default` if empty). Restart that app. **Copy config** puts the JSON for the typed project on the clipboard for anything else.
 5. Optional: **Start at login** (creates `~/Library/LaunchAgents/com.brainai.app.plist`).
 
 BrainAI checks GitHub Releases silently about five seconds after launch, throttled to once every six hours. If a newer version exists, a notification points to **Check for updates…** in the tray menu. Installation downloads the release DMG, verifies its published SHA-256 checksum, Developer ID team and Gatekeeper assessment, then replaces and relaunches the app with rollback on failure. User data in `~/Library/Application Support/BrainAI` is not touched.
 
 If Ollama is already running on `:11434` (user's own install), the app reuses it instead of starting the bundled one.
 
+## Projects (data isolation)
+
+LightRAG 1.5 binds one workspace to the whole server process and honours the `LIGHTRAG-WORKSPACE` header only in `/health`. `brainai_server.py` wraps `lightrag_server.create_app()` without touching site-packages: it swaps the single `LightRAG` / `DocumentManager` for proxies backed by a pool, and a pure-ASGI middleware resolves the header into a per-project instance (created lazily, `workspace=<id>`, so file storages land in `rag_storage/<id>/`). The design mirrors upstream's multi-workspace PRD (`plan/multi-workspace-authz` branch); once upstream ships request-level routing the wrapper can go.
+
+- Requests **with** the header use that project; an invalid id → 400.
+- Requests **without** the header (WebUI, tray polling, Ollama-compatible API) use the *UI project* (`BRAINAI_UI_PROJECT` in `.env`, switched from the tray via `POST /brainai/ui-project`).
+- The MCP server always sends the header and checks `GET /brainai/projects` once; a plain `lightrag-server` (404) is rejected.
+- Concurrency limits (`MAX_ASYNC_LLM`, embeddings) are per instance, so N active projects can reach N× the configured parallelism.
+
 ## Files
 
 | File | Purpose |
 |---|---|
-| `brainai.py` | Tray + process manager (Ollama, LightRAG), Settings, MCP config |
-| `mcp_server.py` | MCP stdio → LightRAG REST |
+| `brainai.py` | Tray + process manager (Ollama, LightRAG), Settings, MCP config, project switch |
+| `brainai_server.py` | LightRAG server wrapper: one LightRAG instance per project, routed by `LIGHTRAG-WORKSPACE`; `/brainai/projects`, `/brainai/ui-project` |
+| `mcp_server.py` | MCP stdio → LightRAG REST, bound to one project (`--project`), fail-closed |
 | `updater.py` | Verified DMG download, extraction, bundle swap and rollback |
 | `update_ui.py` | Native update dialog with release notes |
 | `env.default` | Template copied to `~/Library/Application Support/BrainAI/.env` |

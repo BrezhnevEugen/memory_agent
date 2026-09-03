@@ -46,7 +46,7 @@ from AppKit import (
     NSApp, NSObject, NSSecureTextField, NSBezelStyleRounded, NSPasteboard,
     NSPasteboardTypeString, NSButtonTypeSwitch, NSOpenPanel, NSModalResponseOK,
     NSScrollView, NSTableView, NSTableColumn, NSBezelBorder, NSAlert, NSAlertFirstButtonReturn, NSView,
-    NSTabView, NSTabViewItem,
+    NSTabView, NSTabViewItem, NSTextView,
 )
 from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
 from PyObjCTools import AppHelper
@@ -411,6 +411,40 @@ def mcp_entry(project):
 
 def mcp_config(project):
     return json.dumps({"mcpServers": {"lightrag": mcp_entry(project)}}, indent=2)
+
+
+def readme_text():
+    """Quick start shown in Settings → Readme (paragraphs wrap in the text view)."""
+    return f"""BrainAI — persistent memory for AI agents, one isolated base per project.
+
+FIRST 5 MINUTES
+1. General: paste your DeepSeek API key → Apply. Embeddings run locally (bundled Ollama, bge-m3).
+2. Projects → ＋ New…: give the project a name; the id is derived from it (“ESMO” → esmo).
+3. Projects → Link folder…: choose the folder with your code. BrainAI writes the MCP config for Claude Code (.mcp.json), Cursor (.cursor/mcp.json) and Codex (.codex/config.toml) into that folder. Nothing to configure inside the agents.
+4. Open Claude Code, Cursor or Codex in that folder. Claude Code asks once to trust the “lightrag” server from .mcp.json; Codex reads .codex/config.toml only for trusted folders.
+5. Claude Desktop has no folders: “Claude Desktop →” binds its global config to the selected project.
+
+HOW PROJECTS WORK
+• Folder → project id → storage. Many folders may share one project; a folder always has exactly one.
+• Each project is a separate LightRAG instance with its own files under {DATA / 'rag_storage'}/<id>/ (documents, chunks, vectors, graph, LLM cache) and {DATA / 'inputs'}/<id>/ (uploads).
+• The MCP server refuses to start without --project, so nothing can fall into a shared base by accident.
+• Tray → Open WebUI lists the projects; pick one to browse its graph in the browser.
+
+WHAT AGENTS GET
+MCP tools: query, query_data, insert_text, list_documents, delete_document, create_entity, create_relation, delete_entity, get_entity, search_graph, get_graph_labels, health_check. Tell the agent when to use them, e.g. with a “memory” skill: query at the start of a task, save decisions, bugs and configs afterwards.
+
+MANUAL CONFIG (other agents, or by hand) — the same JSON as “Copy config”:
+{{ "mcpServers": {{ "lightrag": {{
+  "command": "{PYTHON}",
+  "args": ["{MCP_SERVER}", "--lightrag-url", "{LIGHTRAG_URL}", "--project", "<id>"]
+}}}}}}
+
+FILES
+Config: {ENV_FILE}
+Registry: {PROJECTS_FILE}
+Logs: {LOG_DIR}
+Server: {LIGHTRAG_URL}  ·  API docs: {LIGHTRAG_URL}/docs
+"""
 
 
 HOME = pathlib.Path.home()
@@ -793,7 +827,7 @@ class SettingsDelegate(NSObject):
         cr = tabs.contentRect()
         cw, ch = int(cr.size.width), int(cr.size.height)
         pages = {}
-        for ident, title in (("general", "General"), ("projects", "Projects")):
+        for ident, title in (("general", "General"), ("projects", "Projects"), ("readme", "Readme")):
             item = NSTabViewItem.alloc().initWithIdentifier_(ident)
             item.setLabel_(title)
             page = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, cw, ch))
@@ -870,6 +904,23 @@ class SettingsDelegate(NSObject):
         p.addSubview_(make_button("Link folder…", NSMakeRect(L, 10, 120, 28), self, "linkFolder:"))
         p.addSubview_(make_button("Unlink", NSMakeRect(L + 126, 10, 80, 28), self, "unlinkFolder:"))
         p.addSubview_(make_button("📋 Copy config", NSMakeRect(R - 130, 10, 130, 28), self, "copyMcp:"))
+
+        # ── Readme ──
+        r = pages["readme"]
+        rscroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(L, 10, width, ch - 22))
+        rscroll.setBorderType_(NSBezelBorder)
+        rscroll.setHasVerticalScroller_(True)
+        text = NSTextView.alloc().initWithFrame_(NSMakeRect(0, 0, width - 16, ch - 22))
+        text.setEditable_(False)
+        text.setSelectable_(True)
+        text.setFont_(NSFont.systemFontOfSize_(12.0))
+        text.setTextContainerInset_((8.0, 8.0))
+        text.setVerticallyResizable_(True)
+        text.setHorizontallyResizable_(False)
+        text.textContainer().setWidthTracksTextView_(True)
+        text.setString_(readme_text())
+        rscroll.setDocumentView_(text)
+        r.addSubview_(rscroll)
 
         apply_btn = make_button("Apply", NSMakeRect(W - 110, 12, 90, 32), self, "applySettings:")
         apply_btn.setKeyEquivalent_("\r")

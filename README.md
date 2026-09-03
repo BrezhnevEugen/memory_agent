@@ -27,6 +27,15 @@ Claude Desktop / Claude Code / Cursor / Codex
 
 Everything ships inside the `.app`: relocatable Python, LightRAG, the Ollama binary, the MCP server. No Homebrew, no Python, no Docker on the target Mac. The only external dependency is a DeepSeek API key (a few cents per thousand memories).
 
+## First 5 minutes
+
+1. Install Claude Code, Cursor or Codex as usual.
+2. Install BrainAI (DMG → Applications), launch it, paste the DeepSeek API key in Settings → General → **Apply**.
+3. Settings → **Projects** → **＋ New…** (name, e.g. *ESMO*; the id `esmo` is derived) → **Link folder…** → pick your code folder. BrainAI writes `.mcp.json`, `.cursor/mcp.json` and `.codex/config.toml` into it. Nothing to configure inside the agents.
+4. Open the agent in that folder. Claude Code asks once to trust the `lightrag` server; Codex reads `.codex/config.toml` only for trusted folders. Memory is live.
+
+The same steps are in Settings → **Readme**, together with the JSON for agents BrainAI does not know (**Copy config** puts it on the clipboard).
+
 ## Install
 
 1. Open the DMG, drag **BrainAI** to Applications, launch it.

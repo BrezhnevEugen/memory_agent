@@ -1064,7 +1064,8 @@ class BrainAIApp(rumps.App):
             return
         self._project_menu_ids = key
         self.project_item.title = f"📁 Project: {current}"
-        self.project_item.clear()
+        if self.project_item._menu is not None:  # rumps: clear() fails before a submenu exists
+            self.project_item.clear()
         for pid in ids:
             mi = rumps.MenuItem(pid, callback=self._select_project)
             mi.state = 1 if pid == current else 0

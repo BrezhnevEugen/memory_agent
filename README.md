@@ -34,7 +34,7 @@ Everything ships inside the `.app`: relocatable Python, LightRAG, the Ollama bin
 3. Settings opens → paste your DeepSeek API key (**Get** opens the key page) → **Apply**.
 4. Settings → **Projects**: create a project (**New…**: a name plus a short id), then **Link folder…** for every code folder that should use it. BrainAI writes the project-scoped MCP configs (`.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor, `.codex/config.toml` for Codex) into that folder. Several folders can share one project. Claude Desktop has no folders, so **Claude Desktop →** binds its global config to the selected project. Restart the agent afterwards.
 
-The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`. The **Project** submenu chooses which project the WebUI and the counters show.
+The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`. **Open WebUI** lists the projects: pick one to view its graph (the counters refer to the same project).
 
 ## Projects
 

@@ -1126,10 +1126,9 @@ class BrainAIApp(rumps.App):
         self.model_item = item("  Model: —")
         self.docs_item = item("  Documents: —")
         self.entities_item = item("  Entities: —")
-        self.project_item = rumps.MenuItem(f"📁 Project: {ui_project()}")
         self.ram_item = item("  RAM: —")
         self.toggle_item = rumps.MenuItem("⏹ Stop Server", callback=self.toggle_server)
-        self.webui_item = rumps.MenuItem("🌐 Open WebUI", callback=self.open_webui)
+        self.webui_item = rumps.MenuItem("🌐 Open WebUI")  # submenu: one entry per project
         self.update_item = rumps.MenuItem("🔄 Check for updates…", callback=self.check_for_updates)
         self.settings_item = rumps.MenuItem("⚙️ Settings…", callback=self.open_settings)
         self.quit_item = rumps.MenuItem(f"Quit {APP_NAME}", callback=self.quit_app)
@@ -1137,7 +1136,7 @@ class BrainAIApp(rumps.App):
         self.menu = [
             self.header, rumps.separator,
             self.status_item, self.api_item, self.ollama_item, self.model_item,
-            self.project_item, self.docs_item, self.entities_item, rumps.separator,
+            self.docs_item, self.entities_item, rumps.separator,
             self.ram_item, rumps.separator,
             self.toggle_item, self.webui_item, rumps.separator,
             self.update_item, self.settings_item, self.quit_item,
@@ -1275,20 +1274,23 @@ class BrainAIApp(rumps.App):
             return
         self._project_menu_ids = key
         reg = load_projects()
-        self.project_item.title = f"📁 Project: {project_label(current, reg)}"
-        if self.project_item._menu is not None:  # rumps: clear() fails before a submenu exists
-            self.project_item.clear()
+        if self.webui_item._menu is not None:  # rumps: clear() fails before a submenu exists
+            self.webui_item.clear()
         self._project_menu_map = {}
         for pid in ids:
             label = project_label(pid, reg)
             self._project_menu_map[label] = pid
-            mi = rumps.MenuItem(label, callback=self._select_project)
-            mi.state = 1 if pid == current else 0
-            self.project_item.add(mi)
+            mi = rumps.MenuItem(label, callback=self._open_webui_project)
+            mi.state = 1 if pid == current else 0  # ✓ = project the WebUI currently shows
+            self.webui_item.add(mi)
 
-    def _select_project(self, sender):
+    def _open_webui_project(self, sender):
+        """Point the WebUI (header-less client) at the chosen project, then open it."""
         pid = getattr(self, "_project_menu_map", {}).get(sender.title, sender.title)
-        if not valid_project(pid) or pid == ui_project():
+        if not valid_project(pid):
+            return
+        if pid == ui_project():
+            webbrowser.open(LIGHTRAG_URL)
             return
 
         def switch():
@@ -1303,7 +1305,7 @@ class BrainAIApp(rumps.App):
             self._last_status_counts = {}
             self._refresh_project_menu(list_projects(), pid)
             self._check_documents()
-            notify(APP_NAME, f"Project: {pid}", "WebUI and counters now show this project")
+            webbrowser.open(LIGHTRAG_URL)
 
         threading.Thread(target=switch, daemon=True).start()
 
@@ -1331,12 +1333,12 @@ class BrainAIApp(rumps.App):
                         elif sl == "failed":
                             notify(APP_NAME, "Processing failed", f"{c - old} failed")
             self._last_docs, self._last_status_counts = total, dict(counts)
-            self.docs_item.title = f"  📄 Documents: {total}"
+            self.docs_item.title = f"  📄 Documents ({project_label(ui_project())}): {total}"
         except Exception as e:
             log(f"doc poll: {e}")
         try:
-            pop = httpx.get(f"{LIGHTRAG_URL}/graph/label/popular", params={"limit": 1000}, timeout=5).json()
-            n = len(pop) if isinstance(pop, list) else 0
+            labels = httpx.get(f"{LIGHTRAG_URL}/graph/label/list", timeout=10).json()
+            n = len(labels) if isinstance(labels, list) else 0
             if self._last_entities is not None and n > self._last_entities:
                 notify(APP_NAME, "Knowledge graph updated", f"+{n - self._last_entities} entities ({n} total)")
             self._last_entities = n
@@ -1376,9 +1378,6 @@ class BrainAIApp(rumps.App):
             self._update_ui()
         else:
             threading.Thread(target=self.start_server, daemon=True).start()
-
-    def open_webui(self, _):
-        webbrowser.open(LIGHTRAG_URL)
 
     def open_settings(self, _):
         self._settings.show()

@@ -45,6 +45,7 @@ from AppKit import (
     NSBackingStoreBuffered, NSTextField, NSButton, NSPopUpButton, NSBox,
     NSApp, NSObject, NSSecureTextField, NSBezelStyleRounded, NSPasteboard,
     NSPasteboardTypeString, NSButtonTypeSwitch, NSOpenPanel, NSModalResponseOK,
+    NSScrollView, NSTableView, NSTableColumn, NSBezelBorder, NSAlert, NSAlertFirstButtonReturn, NSView,
 )
 from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
 from PyObjCTools import AppHelper
@@ -184,7 +185,10 @@ def ui_project():
     return value if valid_project(value) else DEFAULT_PROJECT
 
 
-def list_projects():
+PROJECTS_FILE = DATA / "projects.json"
+
+
+def _disk_projects():
     ids = {ui_project()}
     try:
         for p in (DATA / "rag_storage").iterdir():
@@ -192,7 +196,40 @@ def list_projects():
                 ids.add(p.name)
     except OSError:
         pass
-    return sorted(ids)
+    return ids
+
+
+def load_projects():
+    """Project registry {id: {"name": display name, "folders": [linked folders]}}.
+
+    Merged with the project directories on disk, so projects created by an MCP
+    client with a new id show up (name = id) without being registered first.
+    """
+    try:
+        data = json.loads(PROJECTS_FILE.read_text())
+    except Exception:
+        data = {}
+    reg = {}
+    for pid, v in (data.items() if isinstance(data, dict) else []):
+        if valid_project(pid) and isinstance(v, dict):
+            reg[pid] = {"name": str(v.get("name") or pid).strip() or pid,
+                        "folders": [f for f in v.get("folders", []) if isinstance(f, str)]}
+    for pid in _disk_projects():
+        reg.setdefault(pid, {"name": pid, "folders": []})
+    return dict(sorted(reg.items()))
+
+
+def save_projects(reg):
+    PROJECTS_FILE.write_text(json.dumps(reg, indent=2, ensure_ascii=False) + "\n")
+
+
+def project_label(pid, reg=None):
+    name = ((reg or load_projects()).get(pid) or {}).get("name", pid)
+    return pid if name == pid else f"{name} ({pid})"
+
+
+def list_projects():
+    return list(load_projects())
 
 
 def migrate_legacy_storage():
@@ -419,6 +456,63 @@ def install_mcp(name, project, folder=None):
         path.write_text(text)
     log(f"MCP installed for {name} (project '{project}'): {path}")
     return path
+
+
+def uninstall_mcp(name, folder):
+    """Remove the lightrag MCP server from a project-scoped agent config (file deleted if left empty)."""
+    rel, kind, scope = MCP_TARGETS[name]
+    if scope != "project":
+        raise ValueError(f"{name} is not project-scoped")
+    path = pathlib.Path(folder) / rel
+    if not path.exists():
+        return
+    if kind == "json":
+        try:
+            data = json.loads(path.read_text())
+        except Exception:
+            return
+        data.get("mcpServers", {}).pop("lightrag", None)
+        if not data.get("mcpServers"):
+            data.pop("mcpServers", None)
+        if data:
+            path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        else:
+            path.unlink()
+    else:
+        text = re.sub(r"^\[mcp_servers\.lightrag\]\n(?:(?!^\[).*\n?)*", "", path.read_text(), flags=re.M)
+        if text.strip():
+            path.write_text(text.rstrip() + "\n")
+        else:
+            path.unlink()
+    log(f"MCP removed for {name}: {path}")
+
+
+PROJECT_AGENTS = ("Claude Code", "Cursor", "Codex")
+
+
+def link_folder(project, folder):
+    """Bind a folder to a project: write all project-scoped agent configs and record the link."""
+    folder = str(pathlib.Path(folder).resolve())
+    reg = load_projects()
+    for name in PROJECT_AGENTS:
+        install_mcp(name, project, folder)
+    entry = reg.setdefault(project, {"name": project, "folders": []})
+    if folder not in entry["folders"]:
+        entry["folders"].append(folder)
+    save_projects(reg)
+
+
+def unlink_folder(project, folder):
+    reg = load_projects()
+    for name in PROJECT_AGENTS:
+        try:
+            uninstall_mcp(name, folder)
+        except Exception as e:
+            log(f"unlink {name} in {folder}: {e}")
+    entry = reg.get(project)
+    if entry and folder in entry["folders"]:
+        entry["folders"].remove(folder)
+    save_projects(reg)
 
 
 # ─────────────────────────────────────────────────────────
@@ -669,6 +763,12 @@ class SettingsDelegate(NSObject):
         self.model_popup = None
         self.key_field = None
         self.login_checkbox = None
+        self.project_popup = None
+        self.name_field = None
+        self.id_label = None
+        self.folder_table = None
+        self._project_ids = []
+        self._folders = []
         return self
 
     @objc.python_method
@@ -679,7 +779,7 @@ class SettingsDelegate(NSObject):
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 480, 560
+        W, H = 480, 575
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, False)
@@ -718,35 +818,44 @@ class SettingsDelegate(NSObject):
         cv.addSubview_(self.login_checkbox)
         y -= 40
 
-        cv.addSubview_(make_label("Connect agents (MCP)", NSMakeRect(20, y, 300, 20), bold=True))
+        cv.addSubview_(make_label("Projects (isolated memory bases)", NSMakeRect(20, y, 300, 20), bold=True))
         y -= 30
-        cv.addSubview_(make_label("Project id", NSMakeRect(20, y + 2, 80, 20)))
-        self.project_field = NSTextField.alloc().initWithFrame_(NSMakeRect(100, y, 360, 24))
-        self.project_field.setPlaceholderString_("empty = folder name  (a-z, 0-9, _)")
-        cv.addSubview_(self.project_field)
-        y -= 32
-        bw = 105
-        for i, (title, sel) in enumerate([
-            ("Claude Desktop", "installClaudeDesktop:"),
-            ("Claude Code", "installClaudeCode:"),
-            ("Cursor", "installCursor:"),
-            ("Codex", "installCodex:"),
-        ]):
-            cv.addSubview_(make_button(title, NSMakeRect(20 + i * (bw + 7), y, bw, 28), self, sel))
-        y -= 30
-        cv.addSubview_(make_label("Claude Code / Cursor / Codex: pick the project folder; its .mcp.json / .cursor/mcp.json /",
-                                  NSMakeRect(20, y, 440, 16), size=11.0))
-        y -= 16
-        cv.addSubview_(make_label(".codex/config.toml gets the lightrag server bound to that project. Each project has its own graph.",
-                                  NSMakeRect(20, y, 440, 16), size=11.0))
-        y -= 16
-        cv.addSubview_(make_label("Claude Desktop: global config bound to the project id above (default: 'default'). Restart the app.",
-                                  NSMakeRect(20, y, 440, 16), size=11.0))
+        self.project_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(20, y - 2, 210, 26), False)
+        self.project_popup.setTarget_(self)
+        self.project_popup.setAction_("projectSelected:")
+        cv.addSubview_(self.project_popup)
+        cv.addSubview_(make_button("＋ New…", NSMakeRect(236, y - 2, 78, 28), self, "newProject:"))
+        cv.addSubview_(make_button("Claude Desktop →", NSMakeRect(318, y - 2, 142, 28), self, "installClaudeDesktop:"))
         y -= 34
-        cv.addSubview_(make_button("📋 Copy config", NSMakeRect(20, y, 140, 28), self, "copyMcp:"))
-        cv.addSubview_(make_button("📘 API Docs", NSMakeRect(170, y, 110, 28), self, "openDocs:"))
-        cv.addSubview_(make_button("📂 Data", NSMakeRect(290, y, 80, 28), self, "openData:"))
-        cv.addSubview_(make_button("📋 Log", NSMakeRect(380, y, 80, 28), self, "openLogs:"))
+        cv.addSubview_(make_label("Name", NSMakeRect(20, y + 2, 50, 20)))
+        self.name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(70, y, 160, 24))
+        cv.addSubview_(self.name_field)
+        self.id_label = make_label("id: —", NSMakeRect(240, y + 2, 220, 20), size=12.0)
+        cv.addSubview_(self.id_label)
+        y -= 26
+        cv.addSubview_(make_label("Linked folders (MCP configs for Claude Code, Cursor and Codex are written there):",
+                                  NSMakeRect(20, y, 440, 16), size=11.0))
+        y -= 84
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, y, 440, 80))
+        scroll.setBorderType_(NSBezelBorder)
+        scroll.setHasVerticalScroller_(True)
+        self.folder_table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, 440, 80))
+        col = NSTableColumn.alloc().initWithIdentifier_("folder")
+        col.setWidth_(420)
+        self.folder_table.addTableColumn_(col)
+        self.folder_table.setHeaderView_(None)
+        self.folder_table.setDataSource_(self)
+        self.folder_table.setRowHeight_(18.0)
+        scroll.setDocumentView_(self.folder_table)
+        cv.addSubview_(scroll)
+        y -= 34
+        cv.addSubview_(make_button("Link folder…", NSMakeRect(20, y, 120, 28), self, "linkFolder:"))
+        cv.addSubview_(make_button("Unlink", NSMakeRect(145, y, 80, 28), self, "unlinkFolder:"))
+        cv.addSubview_(make_button("📋 Copy config", NSMakeRect(330, y, 130, 28), self, "copyMcp:"))
+        y -= 34
+        cv.addSubview_(make_button("📘 API Docs", NSMakeRect(20, y, 110, 28), self, "openDocs:"))
+        cv.addSubview_(make_button("📂 Data", NSMakeRect(135, y, 80, 28), self, "openData:"))
+        cv.addSubview_(make_button("📋 Log", NSMakeRect(220, y, 80, 28), self, "openLogs:"))
 
         apply_btn = make_button("Apply", NSMakeRect(W - 110, 15, 90, 32), self, "applySettings:")
         apply_btn.setKeyEquivalent_("\r")
@@ -766,6 +875,7 @@ class SettingsDelegate(NSObject):
             if mid == cur:
                 self.model_popup.selectItemAtIndex_(i)
         self.login_checkbox.setState_(1 if LAUNCH_AGENT.exists() else 0)
+        self._refresh_projects()
 
     # ── actions ──
 
@@ -793,12 +903,119 @@ class SettingsDelegate(NSObject):
     def testNotify_(self, sender):
         notify(APP_NAME, "Test notification", "Notifications are working!")
 
+    # ── projects ──
+
     @objc.python_method
-    def _project_from_field(self):
-        pid = self.project_field.stringValue().strip()
-        if pid and not valid_project(pid):
-            raise ValueError(f"invalid project id {pid!r}: lowercase a-z, 0-9, _ (max 64)")
-        return pid
+    def _selected_project(self):
+        i = self.project_popup.indexOfSelectedItem()
+        return self._project_ids[i] if 0 <= i < len(self._project_ids) else None
+
+    @objc.python_method
+    def _refresh_projects(self, select=None):
+        reg = load_projects()
+        current = select or self._selected_project() or ui_project()
+        self._project_ids = list(reg)
+        self.project_popup.removeAllItems()
+        for pid in self._project_ids:
+            self.project_popup.addItemWithTitle_(project_label(pid, reg))
+        if current in self._project_ids:
+            self.project_popup.selectItemAtIndex_(self._project_ids.index(current))
+        self._show_project(reg)
+
+    @objc.python_method
+    def _show_project(self, reg=None):
+        reg = reg or load_projects()
+        pid = self._selected_project()
+        entry = reg.get(pid) or {"name": pid or "", "folders": []}
+        self.name_field.setStringValue_(entry["name"])
+        self.id_label.setStringValue_(f"id: {pid or '—'}  ·  rag_storage/{pid or '?'}/")
+        self._folders = list(entry["folders"])
+        self.folder_table.reloadData()
+
+    @objc.python_method
+    def _save_name(self):
+        pid = self._selected_project()
+        if not pid:
+            return
+        name = self.name_field.stringValue().strip() or pid
+        reg = load_projects()
+        if reg.get(pid, {}).get("name") != name:
+            reg.setdefault(pid, {"name": pid, "folders": []})["name"] = name
+            save_projects(reg)
+            self.app.refresh_project_menu()
+
+    def numberOfRowsInTableView_(self, table):
+        return len(self._folders)
+
+    def tableView_objectValueForTableColumn_row_(self, table, column, row):
+        return self._folders[row]
+
+    @objc.IBAction
+    def projectSelected_(self, sender):
+        self._show_project()
+
+    @objc.IBAction
+    def newProject_(self, sender):
+        alert = NSAlert.alloc().init()
+        alert.setMessageText_("New project")
+        alert.setInformativeText_("Name is what you see; id ([a-z0-9_]) names the storage folder and is used in MCP configs.")
+        alert.addButtonWithTitle_("Create")
+        alert.addButtonWithTitle_("Cancel")
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 300, 58))
+        view.addSubview_(make_label("Name", NSMakeRect(0, 34, 50, 20)))
+        name_f = NSTextField.alloc().initWithFrame_(NSMakeRect(50, 32, 250, 24))
+        view.addSubview_(name_f)
+        view.addSubview_(make_label("id", NSMakeRect(0, 4, 50, 20)))
+        id_f = NSTextField.alloc().initWithFrame_(NSMakeRect(50, 2, 250, 24))
+        id_f.setPlaceholderString_("empty = derived from name")
+        view.addSubview_(id_f)
+        alert.setAccessoryView_(view)
+        alert.window().setInitialFirstResponder_(name_f)
+        if alert.runModal() != NSAlertFirstButtonReturn:
+            return
+        name = name_f.stringValue().strip()
+        pid = id_f.stringValue().strip() or project_id_from_name(name)
+        if not name or not valid_project(pid):
+            notify(APP_NAME, "New project: failed", f"invalid id {pid!r}: lowercase a-z, 0-9, _ (max 64)")
+            return
+        reg = load_projects()
+        if pid in reg:
+            notify(APP_NAME, "New project: failed", f"project '{pid}' already exists")
+            return
+        reg[pid] = {"name": name, "folders": []}
+        save_projects(reg)
+        self._refresh_projects(select=pid)
+        self.app.refresh_project_menu()
+        notify(APP_NAME, f"Project '{name}' created", f"id {pid} — link folders or bind Claude Desktop")
+
+    @objc.IBAction
+    def linkFolder_(self, sender):
+        pid = self._selected_project()
+        if not pid:
+            return
+        folder = self._choose_folder(f"Choose a folder to bind to project '{project_label(pid)}'")
+        if folder is None:
+            return
+        try:
+            link_folder(pid, folder)
+        except Exception as e:
+            notify(APP_NAME, "Link folder: failed", str(e)[:120])
+            return
+        self._refresh_projects(select=pid)
+        notify(APP_NAME, f"Folder linked to '{pid}'",
+               f"Restart Claude Code / Cursor / Codex in {pathlib.Path(folder).name} (Codex: project must be trusted)")
+
+    @objc.IBAction
+    def unlinkFolder_(self, sender):
+        pid = self._selected_project()
+        row = self.folder_table.selectedRow()
+        if not pid or row < 0 or row >= len(self._folders):
+            notify(APP_NAME, "Unlink", "Select a folder in the list first")
+            return
+        folder = self._folders[row]
+        unlink_folder(pid, folder)
+        self._refresh_projects(select=pid)
+        notify(APP_NAME, f"Folder unlinked from '{pid}'", folder)
 
     @objc.python_method
     def _choose_folder(self, message):
@@ -812,47 +1029,21 @@ class SettingsDelegate(NSObject):
             return None
         return panel.URLs()[0].path()
 
-    @objc.python_method
-    def _install(self, name):
-        try:
-            pid = self._project_from_field()
-            scope = MCP_TARGETS[name][2]
-            folder = None
-            if scope == "project":
-                folder = self._choose_folder(f"Choose the project folder for {name}")
-                if folder is None:
-                    return
-                pid = pid or project_id_from_name(pathlib.Path(folder).name)
-            else:
-                pid = pid or DEFAULT_PROJECT
-            p = install_mcp(name, pid, folder)
-            hint = "project must be trusted in Codex; " if name == "Codex" else ""
-            notify(APP_NAME, f"{name} → project '{pid}'", f"{hint}restart {name}. {p}")
-        except Exception as e:
-            notify(APP_NAME, f"{name}: failed", str(e)[:120])
-
     @objc.IBAction
     def installClaudeDesktop_(self, sender):
-        self._install("Claude Desktop")
-
-    @objc.IBAction
-    def installClaudeCode_(self, sender):
-        self._install("Claude Code")
-
-    @objc.IBAction
-    def installCursor_(self, sender):
-        self._install("Cursor")
-
-    @objc.IBAction
-    def installCodex_(self, sender):
-        self._install("Codex")
+        pid = self._selected_project()
+        if not pid:
+            return
+        try:
+            p = install_mcp("Claude Desktop", pid)
+            notify(APP_NAME, f"Claude Desktop → '{project_label(pid)}'", f"restart Claude Desktop. {p.name}")
+        except Exception as e:
+            notify(APP_NAME, "Claude Desktop: failed", str(e)[:120])
 
     @objc.IBAction
     def copyMcp_(self, sender):
-        try:
-            pid = self._project_from_field() or DEFAULT_PROJECT
-        except ValueError as e:
-            notify(APP_NAME, "Copy config: failed", str(e)[:120])
+        pid = self._selected_project()
+        if not pid:
             return
         pb = NSPasteboard.generalPasteboard()
         pb.clearContents()
@@ -878,6 +1069,7 @@ class SettingsDelegate(NSObject):
         want_login = bool(self.login_checkbox.state())
         if want_login != LAUNCH_AGENT.exists():
             self.app.set_login_item(want_login)
+        self._save_name()
 
         self.window.close()
         if changed:
@@ -1053,6 +1245,11 @@ class BrainAIApp(rumps.App):
             pass
         self._update_ui()
 
+    def refresh_project_menu(self):
+        """Re-read the registry (names may have changed) and rebuild the submenu."""
+        self._project_menu_ids = None
+        self._refresh_project_menu(list_projects(), ui_project())
+
     def _refresh_project_menu(self, ids, current):
         """Rebuild the Project submenu (only when the list or selection changed)."""
         key = (tuple(ids), current)
@@ -1063,16 +1260,20 @@ class BrainAIApp(rumps.App):
             AppHelper.callAfter(self._refresh_project_menu, ids, current)
             return
         self._project_menu_ids = key
-        self.project_item.title = f"📁 Project: {current}"
+        reg = load_projects()
+        self.project_item.title = f"📁 Project: {project_label(current, reg)}"
         if self.project_item._menu is not None:  # rumps: clear() fails before a submenu exists
             self.project_item.clear()
+        self._project_menu_map = {}
         for pid in ids:
-            mi = rumps.MenuItem(pid, callback=self._select_project)
+            label = project_label(pid, reg)
+            self._project_menu_map[label] = pid
+            mi = rumps.MenuItem(label, callback=self._select_project)
             mi.state = 1 if pid == current else 0
             self.project_item.add(mi)
 
     def _select_project(self, sender):
-        pid = sender.title
+        pid = getattr(self, "_project_menu_map", {}).get(sender.title, sender.title)
         if not valid_project(pid) or pid == ui_project():
             return
 

@@ -32,13 +32,13 @@ Everything ships inside the `.app`: relocatable Python, LightRAG, the Ollama bin
 1. Open the DMG, drag **BrainAI** to Applications, launch it.
 2. First run downloads the `bge-m3` embedding model (~1.2 GB, progress in the menu bar).
 3. Settings opens → paste your DeepSeek API key (**Get** opens the key page) → **Apply**.
-4. Settings → **Connect agents** → click Claude Code / Cursor / Codex and pick the project folder: BrainAI writes the project-scoped MCP config (`.mcp.json`, `.cursor/mcp.json`, `.codex/config.toml`) bound to a project id derived from the folder name (or the id you typed). Claude Desktop has no folders, so it gets a global config bound to one project (`default` unless you type another). Restart that app.
+4. Settings → **Projects**: create a project (**New…**: a name plus a short id), then **Link folder…** for every code folder that should use it. BrainAI writes the project-scoped MCP configs (`.mcp.json` for Claude Code, `.cursor/mcp.json` for Cursor, `.codex/config.toml` for Codex) into that folder. Several folders can share one project. Claude Desktop has no folders, so **Claude Desktop →** binds its global config to the selected project. Restart the agent afterwards.
 
 The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`. The **Project** submenu chooses which project the WebUI and the counters show.
 
 ## Projects
 
-- A project id is lowercase `[a-z0-9_]`, max 64 characters (`memory_agent`, `work_crm`, `default`).
+- A project has a display name (anything, editable) and an id: lowercase `[a-z0-9_]`, max 64 characters, immutable (`esmo`, `work_crm`). Folder → id → storage: many folders may point at one id, a folder always has exactly one id. The registry lives in `projects.json`.
 - Every MCP process is started with `--project <id>` and sends it as the `LIGHTRAG-WORKSPACE` header on each request. Without an id the MCP server exits; against a server that lacks project support it refuses every call. There is no shared fallback.
 - The server keeps one LightRAG instance per project. Storage is physically separate: `rag_storage/<id>/` (documents, chunks, vectors, graph, doc status, LLM cache) and `inputs/<id>/` (uploads). Projects are created on first use; delete a project by removing its folder while the server is stopped.
 - Memory that existed before 0.2.0 is moved into project `default` on first start.

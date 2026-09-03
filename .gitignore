@@ -14,3 +14,8 @@ lightrag/logs/*
 !lightrag/logs/.gitkeep
 app/build/
 app/dist/
+
+# agent MCP configs written by BrainAI (machine-specific paths)
+.mcp.json
+.cursor/
+.codex/

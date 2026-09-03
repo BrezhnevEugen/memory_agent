@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.2.1 — 2026-09-03
+
+- MCP: `update_entity` (description / type / rename, relations follow) and `update_relation`, so agents correct facts in place instead of adding duplicates
+- `skills/memory/SKILL.md`: the memory upkeep process for agents — read before acting, save durable facts, update instead of duplicate, weekly audit. Install into `~/.claude/skills/memory/`
+- Readme tab lists the new tools
+
+
 ## 0.2.0 — 2026-09-03
 
 - **Per-project isolation.** The server (`brainai_server.py`) keeps one LightRAG instance per project, routed by the `LIGHTRAG-WORKSPACE` header; each project's documents, vectors, graph, doc status and LLM cache live under `rag_storage/<project>/` (upload folder under `inputs/<project>/`). No filter on top of a shared graph — physically separate files

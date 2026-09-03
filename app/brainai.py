@@ -439,7 +439,7 @@ HOW PROJECTS WORK
 • Tray → Open WebUI lists the projects; pick one to browse its graph in the browser.
 
 WHAT AGENTS GET
-MCP tools: query, query_data, insert_text, list_documents, delete_document, create_entity, create_relation, delete_entity, get_entity, search_graph, get_graph_labels, health_check. Tell the agent when to use them, e.g. with a “memory” skill: query at the start of a task, save decisions, bugs and configs afterwards.
+MCP tools: query, query_data, insert_text, list_documents, delete_document, create_entity, update_entity, create_relation, update_relation, delete_entity, get_entity, search_graph, get_graph_labels, health_check. Tell the agent when to use them with the “memory” skill from the repository (skills/memory/SKILL.md → ~/.claude/skills/memory/): read before acting, save durable facts, update instead of duplicating, audit weekly.
 
 MANUAL CONFIG (other agents, or by hand) — the same JSON as “Copy config”:
 {{ "mcpServers": {{ "lightrag": {{

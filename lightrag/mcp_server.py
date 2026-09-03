@@ -387,6 +387,63 @@ async def create_relation(
 
 
 @mcp.tool()
+async def update_entity(
+    entity_name: str,
+    description: str = "",
+    entity_type: str = "",
+    new_name: str = "",
+) -> str:
+    """Update an existing entity in place (keeps its relations). Use this instead of
+    create_entity when a fact changed: overwrite the description, fix the type or rename.
+
+    Args:
+        entity_name: Current name of the entity.
+        description: New description (replaces the old one; put the date of the change inside).
+        entity_type: New type, if it should change.
+        new_name: Rename the entity (relations follow the new name).
+    """
+    updated: dict[str, Any] = {}
+    if description:
+        updated["description"] = description
+    if entity_type:
+        updated["entity_type"] = entity_type
+    if new_name:
+        updated["entity_name"] = new_name
+    if not updated:
+        return json.dumps({"status": "noop", "message": "nothing to update"})
+    payload = {"entity_name": entity_name, "updated_data": updated, "allow_rename": bool(new_name)}
+    result = await _post("/graph/entity/edit", payload)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
+async def update_relation(
+    src_entity: str,
+    tgt_entity: str,
+    description: str = "",
+    keywords: str = "",
+) -> str:
+    """Update an existing relation between two entities (description and/or keywords).
+
+    Args:
+        src_entity: Source entity name.
+        tgt_entity: Target entity name.
+        description: New description of the relationship.
+        keywords: New comma-separated keywords.
+    """
+    updated: dict[str, Any] = {}
+    if description:
+        updated["description"] = description
+    if keywords:
+        updated["keywords"] = keywords
+    if not updated:
+        return json.dumps({"status": "noop", "message": "nothing to update"})
+    payload = {"source_id": src_entity, "target_id": tgt_entity, "updated_data": updated}
+    result = await _post("/graph/relation/edit", payload)
+    return json.dumps(result, ensure_ascii=False, indent=2)
+
+
+@mcp.tool()
 async def delete_entity(entity_name: str) -> str:
     """Delete an entity and all its relations from the knowledge graph.
 

@@ -59,9 +59,24 @@ Data lives in `~/Library/Application Support/BrainAI/` (`.env`, `rag_storage/<pr
 
 ## What agents get
 
-MCP tools: `query`, `query_data`, `insert_text`, `create_entity`, `create_relation`, `search_graph`, `get_entity`, `get_graph_labels`, `list_documents`, `delete_document`, `delete_entity`, `health_check`.
+MCP tools: `query`, `query_data`, `insert_text`, `list_documents`, `delete_document`, `create_entity`, `update_entity`, `create_relation`, `update_relation`, `delete_entity`, `get_entity`, `search_graph`, `get_graph_labels`, `health_check`.
 
-A companion [memory skill](lightrag-legacy/memory-skill-unpacked/memory/SKILL.md) tells the agent *when* to read and write: query at the start of non-trivial tasks, save decisions/bugs/configs afterwards, tag entries by domain (`work/`, `personal-project/`, `hobby-esp32/`…), write in English with dates. Since 0.2.0 the hard boundary between projects is the project id, not the domain tag; tags remain useful inside a project.
+## Keeping memory current
+
+A graph is only useful while it is true. The [memory skill](skills/memory/SKILL.md) gives agents the upkeep cycle; install it with
+
+```bash
+mkdir -p ~/.claude/skills/memory && cp skills/memory/SKILL.md ~/.claude/skills/memory/
+```
+
+(Cursor / Codex: paste the same text into the project rules.) The cycle:
+
+1. **Read before acting** — `query` / `query_data` with the task's key terms; code beats memory when they disagree.
+2. **Save what cannot be re-derived** — decisions with reasons, root causes, non-obvious config, environment quirks; one topic per document, English, dated, stable `description` such as `decision/auth-refresh-tokens`.
+3. **Update, never duplicate** — `get_entity` / `search_graph` / `list_documents` first, then `update_entity`, `update_relation`, or re-insert the document under the same description and `delete_document` the old one. Removed things get an explicit "removed (date)".
+4. **Weekly audit** — walk `list_documents`, merge near-duplicate labels, re-query the areas touched this week, record `audit/<date>`.
+
+Domain prefixes from the legacy skill (`work/`, `hobby-esp32/`…) are optional now: the hard boundary between projects is the project id.
 
 BrainAI does not replace an agent's native file-based auto-memory. It exposes a separate MCP server whose tools appear under the `mcp__lightrag__*` namespace. Without the companion memory skill (or explicit instructions), the agent will not automatically mirror its private file memory into the LightRAG graph.
 
@@ -70,6 +85,7 @@ BrainAI does not replace an agent's native file-based auto-memory. It exposes a 
 | Path | What |
 |---|---|
 | `app/` | BrainAI.app source and `build.sh` (bundle, sign, notarize, DMG) — see [app/README.md](app/README.md) |
+| `skills/memory/` | The memory upkeep skill for agents (see *Keeping memory current*) |
 | `lightrag/` | Same stack without the bundle: venv + launchd for a dev machine |
 | `lightrag-legacy/` | Archive of the earlier Ollama-only setup and the memory skill |
 

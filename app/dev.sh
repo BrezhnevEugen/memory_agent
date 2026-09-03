@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Dev helpers for the built bundle (no rebuild):
-#   ./dev.sh reload   copy brainai.py/mcp_server.py into dist/BrainAI.app and relaunch via `open`
+#   ./dev.sh reload   copy brainai.py/mcp_server.py/updater.py/update_ui.py into dist/BrainAI.app and relaunch via `open`
 #   ./dev.sh diag     launch via open, then via terminal; print the diag lines from both
 #   ./dev.sh shot     screenshots of the menu bar after open-launch and terminal-launch (dist/menubar-*.png)
 #   ./dev.sh logs     tail app logs
@@ -12,7 +12,7 @@ APP="$ROOT/dist/BrainAI.app"; RES="$APP/Contents/Resources"
 LOGS="$HOME/Library/Application Support/BrainAI/logs"
 
 kill_all() { pkill -f "$APP/Contents/MacOS/BrainAI"; pkill -f brainai.py; pkill -f "$RES/ollama/ollama"; pkill -f "lightrag.api.lightrag_server"; sleep 1; }
-sync_py() { cp brainai.py mcp_server.py env.default VERSION "$RES/"; codesign --force --sign - "$APP" >/dev/null 2>&1 || true; }
+sync_py() { cp brainai.py mcp_server.py updater.py update_ui.py env.default VERSION "$RES/"; codesign --force --sign - "$APP" >/dev/null 2>&1 || true; }
 
 case "${1:-}" in
   reload) kill_all; sync_py; open "$APP"; sleep 3; pgrep -f "$APP/Contents/MacOS/BrainAI" >/dev/null && echo "running" || echo "NOT running — see $LOGS/launcher.log" ;;

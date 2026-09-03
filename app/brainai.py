@@ -413,8 +413,16 @@ def mcp_config(project):
     return json.dumps({"mcpServers": {"lightrag": mcp_entry(project)}}, indent=2)
 
 
+def _tilde(path):
+    """Show paths under the home directory as ~/… (no user name in the UI)."""
+    path = str(path)
+    home = str(pathlib.Path.home())
+    return "~" + path[len(home):] if path.startswith(home) else path
+
+
 def readme_text():
     """Quick start shown in Settings → Readme (paragraphs wrap in the text view)."""
+    data = _tilde(DATA)
     return f"""BrainAI — persistent memory for AI agents, one isolated base per project.
 
 FIRST 5 MINUTES
@@ -426,7 +434,7 @@ FIRST 5 MINUTES
 
 HOW PROJECTS WORK
 • Folder → project id → storage. Many folders may share one project; a folder always has exactly one.
-• Each project is a separate LightRAG instance with its own files under {DATA / 'rag_storage'}/<id>/ (documents, chunks, vectors, graph, LLM cache) and {DATA / 'inputs'}/<id>/ (uploads).
+• Each project is a separate LightRAG instance with its own files under {data}/rag_storage/<id>/ (documents, chunks, vectors, graph, LLM cache) and {data}/inputs/<id>/ (uploads).
 • The MCP server refuses to start without --project, so nothing can fall into a shared base by accident.
 • Tray → Open WebUI lists the projects; pick one to browse its graph in the browser.
 
@@ -440,9 +448,9 @@ MANUAL CONFIG (other agents, or by hand) — the same JSON as “Copy config”:
 }}}}}}
 
 FILES
-Config: {ENV_FILE}
-Registry: {PROJECTS_FILE}
-Logs: {LOG_DIR}
+Config: {_tilde(ENV_FILE)}
+Registry: {_tilde(PROJECTS_FILE)}
+Logs: {_tilde(LOG_DIR)}
 Server: {LIGHTRAG_URL}  ·  API docs: {LIGHTRAG_URL}/docs
 """
 

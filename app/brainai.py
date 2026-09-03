@@ -873,12 +873,11 @@ class SettingsDelegate(NSObject):
         # ── Projects ──
         p = pages["projects"]
         y = ch - 34
-        self.project_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(L, y, width - 236, 26), False)
+        self.project_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(L, y, width - 90, 26), False)
         self.project_popup.setTarget_(self)
         self.project_popup.setAction_("projectSelected:")
         p.addSubview_(self.project_popup)
-        p.addSubview_(make_button("＋ New…", NSMakeRect(R - 228, y, 80, 28), self, "newProject:"))
-        p.addSubview_(make_button("Claude Desktop →", NSMakeRect(R - 142, y, 142, 28), self, "installClaudeDesktop:"))
+        p.addSubview_(make_button("＋ New…", NSMakeRect(R - 82, y, 82, 28), self, "newProject:"))
         y -= 34
         p.addSubview_(make_label("Name", NSMakeRect(L, y + 2, 50, 20)))
         self.name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(L + 50, y, 170, 24))
@@ -886,9 +885,9 @@ class SettingsDelegate(NSObject):
         self.id_label = make_label("id: —", NSMakeRect(L + 232, y + 2, width - 232, 20), size=12.0)
         p.addSubview_(self.id_label)
         y -= 28
-        p.addSubview_(make_label("Linked folders (MCP configs for Claude Code, Cursor and Codex live there):",
+        p.addSubview_(make_label("Linked folders — picked up automatically by Claude Code, Cursor and Codex:",
                                  NSMakeRect(L, y, width, 16), size=11.0))
-        table_top, table_bottom = y - 6, 50
+        table_top, table_bottom = y - 6, 118
         scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(L, table_bottom, width, table_top - table_bottom))
         scroll.setBorderType_(NSBezelBorder)
         scroll.setHasVerticalScroller_(True)
@@ -901,9 +900,13 @@ class SettingsDelegate(NSObject):
         self.folder_table.setRowHeight_(18.0)
         scroll.setDocumentView_(self.folder_table)
         p.addSubview_(scroll)
-        p.addSubview_(make_button("Link folder…", NSMakeRect(L, 10, 120, 28), self, "linkFolder:"))
-        p.addSubview_(make_button("Unlink", NSMakeRect(L + 126, 10, 80, 28), self, "unlinkFolder:"))
-        p.addSubview_(make_button("📋 Copy config", NSMakeRect(R - 130, 10, 130, 28), self, "copyMcp:"))
+        p.addSubview_(make_button("Link folder…", NSMakeRect(L, 84, 120, 28), self, "linkFolder:"))
+        p.addSubview_(make_button("Unlink", NSMakeRect(L + 126, 84, 80, 28), self, "unlinkFolder:"))
+        p.addSubview_(make_label("Additional configuration", NSMakeRect(L, 58, 300, 16), bold=True, size=11.0))
+        p.addSubview_(make_label("Claude Desktop: no folders, global config · Copy config: JSON for other agents",
+                                 NSMakeRect(L, 42, width, 16), size=11.0))
+        p.addSubview_(make_button("Claude Desktop →", NSMakeRect(L, 8, 150, 28), self, "installClaudeDesktop:"))
+        p.addSubview_(make_button("📋 Copy config", NSMakeRect(L + 156, 8, 130, 28), self, "copyMcp:"))
 
         # ── Readme ──
         r = pages["readme"]

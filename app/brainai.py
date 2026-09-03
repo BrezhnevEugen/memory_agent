@@ -46,6 +46,7 @@ from AppKit import (
     NSApp, NSObject, NSSecureTextField, NSBezelStyleRounded, NSPasteboard,
     NSPasteboardTypeString, NSButtonTypeSwitch, NSOpenPanel, NSModalResponseOK,
     NSScrollView, NSTableView, NSTableColumn, NSBezelBorder, NSAlert, NSAlertFirstButtonReturn, NSView,
+    NSTabView, NSTabViewItem,
 )
 from Foundation import NSMutableAttributedString, NSDictionary, NSMakeRect
 from PyObjCTools import AppHelper
@@ -779,85 +780,98 @@ class SettingsDelegate(NSObject):
             NSApp.activateIgnoringOtherApps_(True)
             return
 
-        W, H = 480, 575
+        W, H = 500, 420
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(200, 200, W, H), NSWindowStyleMaskTitled | NSWindowStyleMaskClosable,
             NSBackingStoreBuffered, False)
         self.window.setTitle_(f"{APP_NAME} {VERSION} — Settings")
         self.window.setReleasedWhenClosed_(False)
         cv = self.window.contentView()
-        y = H - 40
 
-        cv.addSubview_(make_label("DeepSeek API key", NSMakeRect(20, y, 300, 20), bold=True))
+        tabs = NSTabView.alloc().initWithFrame_(NSMakeRect(10, 52, W - 20, H - 62))
+        cv.addSubview_(tabs)
+        cr = tabs.contentRect()
+        cw, ch = int(cr.size.width), int(cr.size.height)
+        pages = {}
+        for ident, title in (("general", "General"), ("projects", "Projects")):
+            item = NSTabViewItem.alloc().initWithIdentifier_(ident)
+            item.setLabel_(title)
+            page = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, cw, ch))
+            item.setView_(page)
+            tabs.addTabViewItem_(item)
+            pages[ident] = page
+        self.tabs = tabs
+        L, R = 12, cw - 12          # left / right content edges inside a page
+        width = R - L
+
+        # ── General ──
+        g = pages["general"]
+        y = ch - 32
+        g.addSubview_(make_label("DeepSeek API key", NSMakeRect(L, y, 300, 20), bold=True))
         y -= 30
-        self.key_field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(20, y, 370, 24))
+        self.key_field = NSSecureTextField.alloc().initWithFrame_(NSMakeRect(L, y, width - 75, 24))
         self.key_field.setPlaceholderString_("sk-...")
-        cv.addSubview_(self.key_field)
-        cv.addSubview_(make_button("Get", NSMakeRect(395, y - 2, 65, 28), self, "openDeepSeekKeys:"))
-        y -= 40
-
-        cv.addSubview_(make_label("LLM model", NSMakeRect(20, y, 200, 20), bold=True))
+        g.addSubview_(self.key_field)
+        g.addSubview_(make_button("Get", NSMakeRect(R - 68, y - 2, 68, 28), self, "openDeepSeekKeys:"))
+        y -= 42
+        g.addSubview_(make_label("LLM model", NSMakeRect(L, y, 200, 20), bold=True))
         y -= 30
-        self.model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(20, y, 440, 26), False)
+        self.model_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(L, y, width, 26), False)
         for mid, desc in LLM_MODELS:
             self.model_popup.addItemWithTitle_(f"{mid}  —  {desc}")
-        cv.addSubview_(self.model_popup)
-        y -= 34
-        cv.addSubview_(make_label(f"Embeddings: {EMBED_MODEL} via bundled Ollama (local, free)",
-                                  NSMakeRect(20, y, 440, 16), size=11.0))
-        y -= 30
-
-        sep = NSBox.alloc().initWithFrame_(NSMakeRect(20, y, W - 40, 1))
+        g.addSubview_(self.model_popup)
+        y -= 26
+        g.addSubview_(make_label(f"Embeddings: {EMBED_MODEL} via bundled Ollama (local, free)",
+                                 NSMakeRect(L, y, width, 16), size=11.0))
+        y -= 28
+        sep = NSBox.alloc().initWithFrame_(NSMakeRect(L, y, width, 1))
         sep.setBoxType_(2)
-        cv.addSubview_(sep)
-        y -= 30
-
-        self.login_checkbox = NSButton.alloc().initWithFrame_(NSMakeRect(20, y, 300, 20))
+        g.addSubview_(sep)
+        y -= 32
+        self.login_checkbox = NSButton.alloc().initWithFrame_(NSMakeRect(L, y, 300, 20))
         self.login_checkbox.setButtonType_(NSButtonTypeSwitch)
         self.login_checkbox.setTitle_("Start BrainAI at login")
-        cv.addSubview_(self.login_checkbox)
-        y -= 40
+        g.addSubview_(self.login_checkbox)
+        g.addSubview_(make_button("📘 API Docs", NSMakeRect(L, 10, 110, 28), self, "openDocs:"))
+        g.addSubview_(make_button("📂 Data folder", NSMakeRect(L + 116, 10, 120, 28), self, "openData:"))
+        g.addSubview_(make_button("📋 Server log", NSMakeRect(L + 242, 10, 120, 28), self, "openLogs:"))
 
-        cv.addSubview_(make_label("Projects (isolated memory bases)", NSMakeRect(20, y, 300, 20), bold=True))
-        y -= 30
-        self.project_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(20, y - 2, 210, 26), False)
+        # ── Projects ──
+        p = pages["projects"]
+        y = ch - 34
+        self.project_popup = NSPopUpButton.alloc().initWithFrame_pullsDown_(NSMakeRect(L, y, width - 236, 26), False)
         self.project_popup.setTarget_(self)
         self.project_popup.setAction_("projectSelected:")
-        cv.addSubview_(self.project_popup)
-        cv.addSubview_(make_button("＋ New…", NSMakeRect(236, y - 2, 78, 28), self, "newProject:"))
-        cv.addSubview_(make_button("Claude Desktop →", NSMakeRect(318, y - 2, 142, 28), self, "installClaudeDesktop:"))
+        p.addSubview_(self.project_popup)
+        p.addSubview_(make_button("＋ New…", NSMakeRect(R - 228, y, 80, 28), self, "newProject:"))
+        p.addSubview_(make_button("Claude Desktop →", NSMakeRect(R - 142, y, 142, 28), self, "installClaudeDesktop:"))
         y -= 34
-        cv.addSubview_(make_label("Name", NSMakeRect(20, y + 2, 50, 20)))
-        self.name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(70, y, 160, 24))
-        cv.addSubview_(self.name_field)
-        self.id_label = make_label("id: —", NSMakeRect(240, y + 2, 220, 20), size=12.0)
-        cv.addSubview_(self.id_label)
-        y -= 26
-        cv.addSubview_(make_label("Linked folders (MCP configs for Claude Code, Cursor and Codex are written there):",
-                                  NSMakeRect(20, y, 440, 16), size=11.0))
-        y -= 84
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, y, 440, 80))
+        p.addSubview_(make_label("Name", NSMakeRect(L, y + 2, 50, 20)))
+        self.name_field = NSTextField.alloc().initWithFrame_(NSMakeRect(L + 50, y, 170, 24))
+        p.addSubview_(self.name_field)
+        self.id_label = make_label("id: —", NSMakeRect(L + 232, y + 2, width - 232, 20), size=12.0)
+        p.addSubview_(self.id_label)
+        y -= 28
+        p.addSubview_(make_label("Linked folders (MCP configs for Claude Code, Cursor and Codex live there):",
+                                 NSMakeRect(L, y, width, 16), size=11.0))
+        table_top, table_bottom = y - 6, 50
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(L, table_bottom, width, table_top - table_bottom))
         scroll.setBorderType_(NSBezelBorder)
         scroll.setHasVerticalScroller_(True)
-        self.folder_table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, 440, 80))
+        self.folder_table = NSTableView.alloc().initWithFrame_(NSMakeRect(0, 0, width, table_top - table_bottom))
         col = NSTableColumn.alloc().initWithIdentifier_("folder")
-        col.setWidth_(420)
+        col.setWidth_(width - 20)
         self.folder_table.addTableColumn_(col)
         self.folder_table.setHeaderView_(None)
         self.folder_table.setDataSource_(self)
         self.folder_table.setRowHeight_(18.0)
         scroll.setDocumentView_(self.folder_table)
-        cv.addSubview_(scroll)
-        y -= 34
-        cv.addSubview_(make_button("Link folder…", NSMakeRect(20, y, 120, 28), self, "linkFolder:"))
-        cv.addSubview_(make_button("Unlink", NSMakeRect(145, y, 80, 28), self, "unlinkFolder:"))
-        cv.addSubview_(make_button("📋 Copy config", NSMakeRect(330, y, 130, 28), self, "copyMcp:"))
-        y -= 34
-        cv.addSubview_(make_button("📘 API Docs", NSMakeRect(20, y, 110, 28), self, "openDocs:"))
-        cv.addSubview_(make_button("📂 Data", NSMakeRect(135, y, 80, 28), self, "openData:"))
-        cv.addSubview_(make_button("📋 Log", NSMakeRect(220, y, 80, 28), self, "openLogs:"))
+        p.addSubview_(scroll)
+        p.addSubview_(make_button("Link folder…", NSMakeRect(L, 10, 120, 28), self, "linkFolder:"))
+        p.addSubview_(make_button("Unlink", NSMakeRect(L + 126, 10, 80, 28), self, "unlinkFolder:"))
+        p.addSubview_(make_button("📋 Copy config", NSMakeRect(R - 130, 10, 130, 28), self, "copyMcp:"))
 
-        apply_btn = make_button("Apply", NSMakeRect(W - 110, 15, 90, 32), self, "applySettings:")
+        apply_btn = make_button("Apply", NSMakeRect(W - 110, 12, 90, 32), self, "applySettings:")
         apply_btn.setKeyEquivalent_("\r")
         cv.addSubview_(apply_btn)
 

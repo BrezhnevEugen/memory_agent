@@ -30,7 +30,7 @@ PY="$BUILD/python/bin/python3"
 
 echo "▶ pip deps"
 "$PY" -m pip install -q --upgrade pip
-"$PY" -m pip install -q "lightrag-hku[api]" mcp httpx psutil rumps pyobjc-framework-Cocoa
+"$PY" -m pip install -q "lightrag-hku[api]" mcp httpx ollama psutil rumps pyobjc-framework-Cocoa
 
 # ── 2. Ollama binary ──
 if [ ! -x "$BUILD/ollama/ollama" ]; then
@@ -61,9 +61,20 @@ fi
 cp brainai.py mcp_server.py env.default VERSION "$RES/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$BUILD/python" "$RES/"
 rsync -a "$BUILD/ollama" "$RES/"
-# strip pip/setuptools/tests to save space
-rm -rf "$RES"/python/lib/python*/site-packages/{pip,setuptools,wheel}* \
+# Strip packaging tools/tests to save space. Keep the patterns exact: `pip*`
+# also matches pipmaster, which is a required LightRAG runtime dependency.
+rm -rf "$RES"/python/lib/python*/site-packages/pip \
+       "$RES"/python/lib/python*/site-packages/pip-*.dist-info \
+       "$RES"/python/lib/python*/site-packages/setuptools \
+       "$RES"/python/lib/python*/site-packages/setuptools-*.dist-info \
+       "$RES"/python/lib/python*/site-packages/wheel \
+       "$RES"/python/lib/python*/site-packages/wheel-*.dist-info \
        "$RES"/python/lib/python*/test "$RES"/python/lib/python*/idlelib 2>/dev/null || true
+
+# Fail before signing if pruning removed a LightRAG runtime dependency.
+"$RES/python/bin/python3" -c \
+  'import ollama, pipmaster; from lightrag.api import lightrag_server' \
+  >/dev/null
 
 "$RES/python/bin/python3" make_icon.py "$RES/BrainAI.icns"
 
@@ -95,10 +106,30 @@ echo "▶ codesign as: $SIGN_ID"
 xattr -cr "$APP" || true
 SIGN_OPTS=(--force --sign "$SIGN_ID" --timestamp --options runtime --entitlements entitlements.plist)
 [ "$SIGN_ID" = "-" ] && SIGN_OPTS=(--force --sign - --entitlements entitlements.plist)
+sign_macho() {
+  local target="$1" details attempt sign_output
+  for attempt in 1 2 3; do
+    if sign_output=$(codesign "${SIGN_OPTS[@]}" "$target" 2>&1); then
+      [ "$SIGN_ID" = "-" ] && return 0
+      details=$(codesign -dv --verbose=4 "$target" 2>&1)
+      if [[ "$details" == *"Authority=$SIGN_ID"* \
+         && "$details" == *"Timestamp="* \
+         && "$details" == *"flags="*"runtime"* ]]; then
+        return 0
+      fi
+    fi
+    [ -n "$sign_output" ] && echo "  codesign: $sign_output" >&2
+    echo "  retry signature ($attempt/3): ${target#$APP/}" >&2
+  done
+  echo "✗ invalid nested signature: ${target#$APP/}" >&2
+  return 1
+}
 # inside-out: every Mach-O first (dylibs, .so, executables), then the bundle
 find "$RES/python" "$RES/ollama" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 \
   | while IFS= read -r -d '' f; do
-      file -b "$f" | grep -q 'Mach-O' && codesign "${SIGN_OPTS[@]}" "$f" 2>/dev/null || true
+      if file -b "$f" | grep -q 'Mach-O'; then
+        sign_macho "$f"
+      fi
     done
 codesign "${SIGN_OPTS[@]}" "$APP"
 codesign --verify --deep --strict "$APP"

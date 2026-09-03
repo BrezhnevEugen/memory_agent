@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.2 — 2026-09-03
+
+- Keep the `pipmaster` runtime dependency when pruning packaging tools from the app bundle
+- Bundle the Python Ollama client required by the configured `bge-m3` embedding provider
+- Validate the bundled LightRAG server import before signing and notarization
+
 ## 0.1.1 — 2026-09-03
 
 - Show the menu-bar icon immediately on cold `.app` launches

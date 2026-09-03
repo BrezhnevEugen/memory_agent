@@ -18,6 +18,7 @@ User data (never inside the bundle):
 Runs from source too (dev mode): python3 brainai.py — uses sys.executable and `ollama` from PATH.
 """
 
+import fcntl
 import json
 import os
 import pathlib
@@ -150,6 +151,7 @@ def ensure_data_dirs():
 
 
 RUN_DIR = DATA / "run"
+_instance_lock = None
 
 
 def _write_pid(name, pid):
@@ -183,18 +185,55 @@ def _kill_stale(name):
 
 
 def acquire_single_instance():
-    """Exit if another BrainAI is already running; otherwise record our pid."""
-    f = RUN_DIR / "brainai.pid"
+    """Hold an OS lock for the lifetime of the app and reject duplicate launches."""
+    global _instance_lock
+    RUN_DIR.mkdir(parents=True, exist_ok=True)
+    lock = open(RUN_DIR / "brainai.lock", "a+")
     try:
-        pid = int(f.read_text())
-        p = psutil.Process(pid)
-        if pid != os.getpid() and "brainai.py" in " ".join(p.cmdline()):
-            log(f"already running pid={pid}, exiting")
-            notify(APP_NAME, "Already running", "BrainAI is in the menu bar")
-            sys.exit(0)
-    except (FileNotFoundError, ValueError, psutil.NoSuchProcess, psutil.AccessDenied):
-        pass
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock.seek(0)
+        pid = lock.read().strip() or "unknown"
+        lock.close()
+        log(f"already running pid={pid}, exiting")
+        notify(APP_NAME, "Already running", "BrainAI is in the menu bar")
+        sys.exit(0)
+    lock.seek(0)
+    lock.truncate()
+    lock.write(str(os.getpid()))
+    lock.flush()
+    _instance_lock = lock
     _write_pid("brainai", os.getpid())
+
+
+def release_single_instance():
+    """Remove only per-run state; preserve .env, tokens, models and knowledge data."""
+    global _instance_lock
+    pid_file = RUN_DIR / "brainai.pid"
+    try:
+        if int(pid_file.read_text()) == os.getpid():
+            pid_file.unlink()
+    except (FileNotFoundError, ValueError):
+        pass
+    if _instance_lock is not None:
+        lock_path = RUN_DIR / "brainai.lock"
+        try:
+            # Unlink only the inode we have locked. A replacement lock created by
+            # a new process must never be removed by this process while exiting.
+            path_stat = lock_path.stat()
+            fd_stat = os.fstat(_instance_lock.fileno())
+            if (path_stat.st_dev, path_stat.st_ino) == (fd_stat.st_dev, fd_stat.st_ino):
+                lock_path.unlink()
+        except FileNotFoundError:
+            pass
+        finally:
+            fcntl.flock(_instance_lock.fileno(), fcntl.LOCK_UN)
+            _instance_lock.close()
+            _instance_lock = None
+    try:
+        RUN_DIR.rmdir()
+    except OSError:
+        pass
 
 
 def port_open(url, path="/", timeout=2):
@@ -305,12 +344,66 @@ class Services:
         self.ollama_external = False   # someone else's Ollama already on the port
         self.lightrag_proc = None
         self.pull_progress = None      # None | 0..100
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
+        self._stopping = threading.Event()
+
+    @property
+    def stopping(self):
+        return self._stopping.is_set()
+
+    @staticmethod
+    def _remove_pid_file(name):
+        try:
+            (RUN_DIR / f"{name}.pid").unlink()
+        except OSError:
+            pass
+
+    @staticmethod
+    def _bundled_child_kind(proc):
+        """Return the kind for a child launched from a BrainAI.app bundle."""
+        try:
+            cmdline = proc.cmdline()
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            return None
+        if not cmdline:
+            return None
+        executable = os.path.realpath(cmdline[0])
+        marker = f"{os.sep}BrainAI.app{os.sep}Contents{os.sep}Resources{os.sep}"
+        if marker not in executable:
+            return None
+        if executable.endswith(f"{os.sep}ollama{os.sep}ollama") and "serve" in cmdline[1:]:
+            return "ollama"
+        python_path = pathlib.Path(executable)
+        is_bundled_python = (
+            python_path.name.startswith("python3")
+            and python_path.parent.name == "bin"
+            and python_path.parent.parent.name == "python"
+        )
+        if is_bundled_python:
+            command = " ".join(cmdline[1:])
+            if "from lightrag.api.lightrag_server import main; main()" in command:
+                return "lightrag"
+        return None
+
+    @classmethod
+    def _kill_bundled_children(cls, kinds=None):
+        """Remove orphaned children from this or an older BrainAI.app instance."""
+        for proc in psutil.process_iter(["pid"]):
+            if proc.pid == os.getpid():
+                continue
+            kind = cls._bundled_child_kind(proc)
+            if kind is None or (kinds is not None and kind not in kinds):
+                continue
+            log(f"stopping orphaned bundled {kind} pid={proc.pid}")
+            cls._kill_pid(proc.pid)
 
     # ── Ollama ──
 
     def start_ollama(self):
+        if self.stopping:
+            return False
         _kill_stale("ollama")
+        self._kill_bundled_children({"ollama"})
         if port_open(OLLAMA_URL, "/api/tags"):
             self.ollama_external = self.ollama_proc is None
             return True
@@ -320,11 +413,18 @@ class Services:
         env = dict(os.environ, OLLAMA_HOST=f"127.0.0.1:{OLLAMA_PORT}",
                    OLLAMA_MODELS=str(OLLAMA_MODELS), OLLAMA_KEEP_ALIVE="10m")
         out = open(LOG_DIR / "ollama.log", "a")
-        self.ollama_proc = subprocess.Popen([OLLAMA_BIN, "serve"], env=env, stdout=out, stderr=out,
-                                            start_new_session=True)
-        _write_pid("ollama", self.ollama_proc.pid)
-        self.ollama_external = False
+        proc = subprocess.Popen([OLLAMA_BIN, "serve"], env=env, stdout=out, stderr=out,
+                                start_new_session=True)
+        with self._lock:
+            if self.stopping:
+                self._kill(proc)
+                return False
+            self.ollama_proc = proc
+            self.ollama_external = False
+            _write_pid("ollama", proc.pid)
         for _ in range(30):
+            if self.stopping:
+                return False
             if port_open(OLLAMA_URL, "/api/tags"):
                 return True
             time.sleep(1)
@@ -365,25 +465,34 @@ class Services:
     # ── LightRAG ──
 
     def start_lightrag(self):
+        if self.stopping:
+            return False
+        _kill_stale("lightrag")
+        self._kill_bundled_children({"lightrag"})
+        if self.lightrag_alive():
+            log("lightrag already answering on port — reusing external instance")
+            return True
+        env = dict(os.environ)
+        env.update(read_env())
+        env.update(WORKING_DIR=str(DATA / "rag_storage"), INPUT_DIR=str(DATA / "inputs"),
+                   HOST="127.0.0.1", PORT=str(LIGHTRAG_PORT),
+                   EMBEDDING_BINDING_HOST=OLLAMA_URL, PYTHONUNBUFFERED="1")
+        out = open(LOG_DIR / "server.log", "a")
+        proc = subprocess.Popen(
+            [PYTHON, "-c", "from lightrag.api.lightrag_server import main; main()"],
+            cwd=str(DATA), env=env, stdout=out, stderr=out, start_new_session=True)
         with self._lock:
-            _kill_stale("lightrag")
-            if self.lightrag_alive():
-                log("lightrag already answering on port — reusing external instance")
-                return True
-            env = dict(os.environ)
-            env.update(read_env())
-            env.update(WORKING_DIR=str(DATA / "rag_storage"), INPUT_DIR=str(DATA / "inputs"),
-                       HOST="127.0.0.1", PORT=str(LIGHTRAG_PORT),
-                       EMBEDDING_BINDING_HOST=OLLAMA_URL, PYTHONUNBUFFERED="1")
-            out = open(LOG_DIR / "server.log", "a")
-            self.lightrag_proc = subprocess.Popen(
-                [PYTHON, "-c", "from lightrag.api.lightrag_server import main; main()"],
-                cwd=str(DATA), env=env, stdout=out, stderr=out, start_new_session=True)
-            _write_pid("lightrag", self.lightrag_proc.pid)
+            if self.stopping:
+                self._kill(proc)
+                return False
+            self.lightrag_proc = proc
+            _write_pid("lightrag", proc.pid)
         for _ in range(60):
+            if self.stopping:
+                return False
             if self.lightrag_alive():
                 return True
-            if self.lightrag_proc.poll() is not None:
+            if proc.poll() is not None:
                 return False
             time.sleep(1)
         return False
@@ -395,8 +504,11 @@ class Services:
             return False
 
     def stop_lightrag(self):
-        self._kill(self.lightrag_proc)
-        self.lightrag_proc = None
+        with self._lock:
+            proc = self.lightrag_proc
+            self.lightrag_proc = None
+        self._kill(proc)
+        self._remove_pid_file("lightrag")
 
     def restart_lightrag(self):
         self.stop_lightrag()
@@ -404,23 +516,48 @@ class Services:
         return self.start_lightrag()
 
     def stop_all(self):
+        self._stopping.set()
         self.stop_lightrag()
-        if not self.ollama_external:
-            self._kill(self.ollama_proc)
+        with self._lock:
+            proc = self.ollama_proc
             self.ollama_proc = None
+            ollama_external = self.ollama_external
+        if not ollama_external:
+            self._kill(proc)
+        self._remove_pid_file("ollama")
+        self._kill_bundled_children()
+
+    @classmethod
+    def _kill(cls, proc):
+        if proc is None:
+            return
+        cls._kill_pid(proc.pid)
 
     @staticmethod
-    def _kill(proc):
-        if proc is None or proc.poll() is not None:
-            return
+    def _kill_pid(pid):
         try:
-            os.killpg(proc.pid, signal.SIGTERM)
-            proc.wait(timeout=10)
-        except Exception:
+            proc = psutil.Process(pid)
+            if proc.status() == psutil.STATUS_ZOMBIE:
+                proc.wait(timeout=0)
+                return
             try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except Exception:
-                pass
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGTERM)
+                else:
+                    proc.terminate()
+            except (ProcessLookupError, psutil.NoSuchProcess):
+                return
+            try:
+                proc.wait(timeout=10)
+                return
+            except psutil.TimeoutExpired:
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, signal.SIGKILL)
+                else:
+                    proc.kill()
+                proc.wait(timeout=3)
+        except (ProcessLookupError, psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
 
 
 # ─────────────────────────────────────────────────────────
@@ -618,9 +755,17 @@ class SettingsDelegate(NSObject):
 
 class BrainAIApp(rumps.App):
     def __init__(self):
-        super().__init__(APP_NAME, quit_button=None)
+        # Keep the status item compact and visible from the first event-loop tick.
+        # Falling back to APP_NAME makes a cold .app launch show a wide "BrainAI"
+        # item until Ollama/LightRAG finish booting, which macOS may hide when the
+        # menu bar is crowded. Direct launches looked fine because services were
+        # already warm and _update_ui replaced it with the emoji almost at once.
+        super().__init__(APP_NAME, title="🧠", quit_button=None)
         ensure_data_dirs()
         self.services = Services()
+        self._shutdown_lock = threading.Lock()
+        self._shutting_down = False
+        rumps.events.before_quit.register(self.shutdown)
 
         def item(text):
             m = rumps.MenuItem(text, callback=None)
@@ -822,15 +967,44 @@ class BrainAIApp(rumps.App):
         self._settings.show()
 
     def quit_app(self, _):
-        self.services.stop_all()
+        self.shutdown()
         rumps.quit_application()
+
+    def shutdown(self, *_):
+        """Stop processes and runtime files while preserving all persistent user data."""
+        with self._shutdown_lock:
+            if self._shutting_down:
+                return
+            self._shutting_down = True
+        try:
+            self.services.stop_all()
+        finally:
+            # NSApplication.terminate_ may exit the process without unwinding
+            # app.run(), so runtime files must be removed before that call.
+            release_single_instance()
+
+
+def install_shutdown_signal_handlers(app):
+    """Route shell, launchd and logout termination through graceful cleanup."""
+    def handle(signum, _frame):
+        log(f"received signal {signum}, shutting down")
+        app.shutdown()
+        rumps.quit_application()
+
+    for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(signum, handle)
 
 
 if __name__ == "__main__":
     ensure_data_dirs()
     acquire_single_instance()
-    app = BrainAIApp()
+    app = None
     try:
+        app = BrainAIApp()
+        install_shutdown_signal_handlers(app)
+        rumps.events.before_start.register(lambda: install_shutdown_signal_handlers(app))
         app.run()
     finally:
-        app.services.stop_all()
+        if app is not None:
+            app.shutdown()
+        release_single_instance()

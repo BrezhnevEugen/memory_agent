@@ -77,6 +77,13 @@ find "$RES" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) -print0 
     *"Mach-O"*"x86_64"*) [ "$LIPO_ARCH" = x86_64 ] || { echo "  drop foreign-arch: ${f#$RES/}"; rm -f "$f"; } ;;
   esac
 done
+# The upstream Ollama archive contains generic symlinks to Intel-only dylibs.
+# Once those foreign binaries are removed, the dangling links make Gatekeeper
+# reject the otherwise notarized bundle (`invalid destination for symbolic link`).
+find -L "$RES" -type l -print0 | while IFS= read -r -d '' link; do
+  echo "  drop dangling symlink: ${link#$RES/}"
+  rm -f "$link"
+done
 
 # ── 4. Sign ──
 # SIGN_ID: "Developer ID Application: …" (auto-detected from keychain) or "-" for ad-hoc
@@ -94,7 +101,8 @@ find "$RES/python" "$RES/ollama" -type f \( -name '*.so' -o -name '*.dylib' -o -
       file -b "$f" | grep -q 'Mach-O' && codesign "${SIGN_OPTS[@]}" "$f" 2>/dev/null || true
     done
 codesign "${SIGN_OPTS[@]}" "$APP"
-codesign --verify --deep --strict "$APP" && echo "  signature ok"
+codesign --verify --deep --strict "$APP"
+echo "  signature ok"
 
 # ── 5. DMG ──
 echo "▶ dmg"

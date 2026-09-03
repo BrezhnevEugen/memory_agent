@@ -24,6 +24,8 @@ Downloads at build time: python-build-standalone (~30 MB), `lightrag-hku[api]` +
 4. Settings → **Connect agents**: one click writes the `lightrag` MCP server into Claude Desktop (`claude_desktop_config.json`), Claude Code (`~/.claude.json`), Cursor (`~/.cursor/mcp.json`) or Codex (`~/.codex/config.toml`). Restart that app. **Copy config** puts the JSON on the clipboard for anything else.
 5. Optional: **Start at login** (creates `~/Library/LaunchAgents/com.brainai.app.plist`).
 
+BrainAI checks GitHub Releases silently about five seconds after launch, throttled to once every six hours. If a newer version exists, a notification points to **Check for updates…** in the tray menu. Installation downloads the release DMG, verifies its published SHA-256 checksum, Developer ID team and Gatekeeper assessment, then replaces and relaunches the app with rollback on failure. User data in `~/Library/Application Support/BrainAI` is not touched.
+
 If Ollama is already running on `:11434` (user's own install), the app reuses it instead of starting the bundled one.
 
 ## Files
@@ -32,6 +34,8 @@ If Ollama is already running on `:11434` (user's own install), the app reuses it
 |---|---|
 | `brainai.py` | Tray + process manager (Ollama, LightRAG), Settings, MCP config |
 | `mcp_server.py` | MCP stdio → LightRAG REST |
+| `updater.py` | Verified DMG download, extraction, bundle swap and rollback |
+| `update_ui.py` | Native update dialog with release notes |
 | `env.default` | Template copied to `~/Library/Application Support/BrainAI/.env` |
 | `launcher.sh` | `Contents/MacOS/BrainAI` — execs bundled python |
 | `Info.plist` | `LSUIElement` (no Dock icon) |
@@ -41,7 +45,7 @@ If Ollama is already running on `:11434` (user's own install), the app reuses it
 ## Dev run without building
 
 ```bash
-pip install lightrag-hku[api] mcp httpx psutil rumps pyobjc-framework-Cocoa
+pip install 'lightrag-hku[api]' 'mcp>=2,<3' certifi httpx psutil rumps pyobjc-framework-Cocoa
 brew install ollama   # or any ollama on PATH
 python3 brainai.py
 ```

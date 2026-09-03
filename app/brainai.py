@@ -8,7 +8,7 @@ Manages three things without launchd or system-wide installs:
   * MCP server config for agents (Cowork / Cursor / Claude Code)
 
 Layout inside BrainAI.app/Contents/Resources:
-  brainai.py, mcp_server.py, env.default
+  brainai.py, mcp_server.py, updater.py, update_ui.py, env.default
   python/            relocatable CPython with lightrag-hku[api], rumps, pyobjc…
   ollama/ollama      Ollama binary
 
@@ -65,7 +65,12 @@ DATA = pathlib.Path.home() / "Library" / "Application Support" / APP_NAME
 ENV_FILE = DATA / ".env"
 LOG_DIR = DATA / "logs"
 OLLAMA_MODELS = DATA / "ollama" / "models"
+UPDATE_STATE_FILE = DATA / "update-state.json"
 LAUNCH_AGENT = pathlib.Path.home() / "Library" / "LaunchAgents" / "com.brainai.app.plist"
+
+RELEASES_API_URL = "https://api.github.com/repos/BrezhnevEugen/memory_agent/releases/latest"
+RELEASES_URL = "https://github.com/BrezhnevEugen/memory_agent/releases"
+UPDATE_CHECK_INTERVAL = 6 * 3600
 
 LIGHTRAG_PORT = 9621
 LIGHTRAG_URL = f"http://127.0.0.1:{LIGHTRAG_PORT}"
@@ -148,6 +153,22 @@ def ensure_data_dirs():
     if not ENV_FILE.exists():
         shutil.copy(ENV_DEFAULT, ENV_FILE)
         os.chmod(ENV_FILE, 0o600)
+
+
+def load_update_state():
+    try:
+        data = json.loads(UPDATE_STATE_FILE.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def save_update_state(state):
+    """Atomically persist non-sensitive updater state."""
+    DATA.mkdir(parents=True, exist_ok=True)
+    temporary = UPDATE_STATE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, UPDATE_STATE_FILE)
 
 
 RUN_DIR = DATA / "run"
@@ -765,6 +786,9 @@ class BrainAIApp(rumps.App):
         self.services = Services()
         self._shutdown_lock = threading.Lock()
         self._shutting_down = False
+        self._pending_release = None
+        self._update_in_progress = False
+        self._update_progress_title = None
         rumps.events.before_quit.register(self.shutdown)
 
         def item(text):
@@ -782,6 +806,7 @@ class BrainAIApp(rumps.App):
         self.ram_item = item("  RAM: —")
         self.toggle_item = rumps.MenuItem("⏹ Stop Server", callback=self.toggle_server)
         self.webui_item = rumps.MenuItem("🌐 Open WebUI", callback=self.open_webui)
+        self.update_item = rumps.MenuItem("🔄 Check for updates…", callback=self.check_for_updates)
         self.settings_item = rumps.MenuItem("⚙️ Settings…", callback=self.open_settings)
         self.quit_item = rumps.MenuItem(f"Quit {APP_NAME}", callback=self.quit_app)
 
@@ -791,7 +816,7 @@ class BrainAIApp(rumps.App):
             self.docs_item, self.entities_item, rumps.separator,
             self.ram_item, rumps.separator,
             self.toggle_item, self.webui_item, rumps.separator,
-            self.settings_item, self.quit_item,
+            self.update_item, self.settings_item, self.quit_item,
         ]
         self.header._menuitem.setAttributedTitle_(make_text(f"🧠 {APP_NAME} {VERSION}", COLOR_LABEL, NSFont.boldSystemFontOfSize_(13.0)))
 
@@ -806,6 +831,9 @@ class BrainAIApp(rumps.App):
         self._settings = SettingsDelegate.alloc().initWithApp_(self)
 
         threading.Thread(target=self._bootstrap, daemon=True).start()
+        self._update_timer = threading.Timer(5.0, self._autocheck_updates_background)
+        self._update_timer.daemon = True
+        self._update_timer.start()
 
     # ── lifecycle ──
 
@@ -930,7 +958,9 @@ class BrainAIApp(rumps.App):
             pass
 
     def _update_ui(self):
-        if self.services.pull_progress is not None:
+        if self._update_progress_title is not None:
+            self.title = self._update_progress_title
+        elif self.services.pull_progress is not None:
             self.title = "⬇️"
         elif self._alive:
             self.title = "🧠"
@@ -965,6 +995,160 @@ class BrainAIApp(rumps.App):
 
     def open_settings(self, _):
         self._settings.show()
+
+    @staticmethod
+    def _fetch_latest_release():
+        """Fetch GitHub's latest published release with a bundled CA store."""
+        import ssl
+        import urllib.request
+
+        import certifi
+
+        request = urllib.request.Request(
+            RELEASES_API_URL,
+            headers={
+                "User-Agent": f"BrainAI/{VERSION}",
+                "Accept": "application/vnd.github+json",
+            },
+        )
+        context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=10, context=context) as response:
+            return json.load(response)
+
+    @staticmethod
+    def _is_newer_version(latest, current):
+        def parts(value):
+            core = str(value).strip().lstrip("v").split("-", 1)[0]
+            try:
+                parsed = tuple(int(part) for part in core.split("."))
+            except ValueError:
+                return ()
+            return parsed + (0,) * (3 - len(parsed))
+
+        latest_parts = parts(latest)
+        current_parts = parts(current)
+        return bool(latest_parts and current_parts and latest_parts > current_parts)
+
+    def check_for_updates(self, _):
+        """Manual update check invoked from the menu-bar menu."""
+        if not IN_BUNDLE or VERSION == "dev":
+            rumps.alert(
+                title="Source build",
+                message="Automatic installation is available only in the packaged BrainAI.app.",
+            )
+            return
+        if self._update_in_progress:
+            notify(APP_NAME, "Update in progress", "The new version is already downloading")
+            return
+        release = self._pending_release
+        if not release:
+            try:
+                self.update_item.title = "🔄 Checking for updates…"
+                release = self._fetch_latest_release()
+            except Exception as exc:
+                rumps.alert(title="Update check failed", message=str(exc))
+                return
+            finally:
+                self.update_item.title = "🔄 Check for updates…"
+
+        latest = str(release.get("tag_name") or "").lstrip("v").strip()
+        if not latest:
+            rumps.alert(title="Update check failed", message="The latest release has no version tag.")
+            return
+        if not self._is_newer_version(latest, VERSION):
+            self._pending_release = None
+            rumps.alert(
+                title="BrainAI is up to date",
+                message=f"BrainAI {VERSION} is the latest version.",
+            )
+            return
+
+        self._pending_release = release
+        from update_ui import INSTALL, OPEN_RELEASE, show_update_dialog
+
+        choice = show_update_dialog(
+            current_version=VERSION,
+            latest_version=latest,
+            release_body=release.get("body", "") or "",
+            icon_path=RES / "BrainAI.icns",
+        )
+        if choice == INSTALL:
+            self._update_in_progress = True
+            threading.Thread(target=self._do_self_update, args=(release,), daemon=True).start()
+        elif choice == OPEN_RELEASE:
+            webbrowser.open(release.get("html_url") or RELEASES_URL)
+
+    def _do_self_update(self, release):
+        """Download and verify the update, then exit through normal cleanup."""
+        from updater import UpdateError, install_update
+
+        latest = str(release.get("tag_name") or "").lstrip("v") or "?"
+        last_paint = [0.0]
+
+        def on_progress(downloaded, total):
+            if total <= 0:
+                return
+            now = time.monotonic()
+            if now - last_paint[0] < 0.25 and downloaded < total:
+                return
+            last_paint[0] = now
+            self._update_progress_title = f"↓ {int(downloaded * 100 / total)}%"
+            self.title = self._update_progress_title
+
+        try:
+            self._update_progress_title = "↓ 0%"
+            self.title = self._update_progress_title
+            notify(APP_NAME, "Downloading update…", f"BrainAI {latest}")
+            install_update(release, progress=on_progress)
+            self._update_progress_title = "Installing…"
+            self.title = self._update_progress_title
+            notify(APP_NAME, "Update ready", "Restarting BrainAI…")
+            time.sleep(1.0)
+            os.kill(os.getpid(), signal.SIGTERM)
+        except UpdateError as exc:
+            log(f"update failed: {exc}")
+            self._update_in_progress = False
+            self._update_progress_title = None
+            self._update_ui()
+            notify(APP_NAME, "Update failed", str(exc)[:200])
+        except Exception as exc:
+            log(f"unexpected update failure: {exc}")
+            self._update_in_progress = False
+            self._update_progress_title = None
+            self._update_ui()
+            notify(APP_NAME, "Update failed", f"Unexpected error: {str(exc)[:180]}")
+
+    def _autocheck_updates_background(self):
+        """Silently check once per six hours and notify only when newer."""
+        if not IN_BUNDLE or VERSION == "dev" or self._shutting_down:
+            return
+        state = load_update_state()
+        try:
+            last_check = float(state.get("last_update_check_at") or 0)
+        except (TypeError, ValueError):
+            last_check = 0
+        if time.time() - last_check < UPDATE_CHECK_INTERVAL:
+            return
+        try:
+            release = self._fetch_latest_release()
+        except Exception as exc:
+            log(f"automatic update check skipped: {exc}")
+            return
+
+        state["last_update_check_at"] = time.time()
+        try:
+            save_update_state(state)
+        except Exception as exc:
+            log(f"could not save update state: {exc}")
+
+        latest = str(release.get("tag_name") or "").lstrip("v").strip()
+        if latest and self._is_newer_version(latest, VERSION):
+            self._pending_release = release
+            notify(
+                APP_NAME,
+                f"Update {latest} available",
+                "Open BrainAI → Check for updates… to install",
+            )
 
     def quit_app(self, _):
         self.shutdown()

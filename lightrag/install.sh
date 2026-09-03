@@ -10,7 +10,7 @@ command -v "$PY" >/dev/null || PY=python3
 echo "▶ venv ($PY)"
 [ -d .venv ] || "$PY" -m venv .venv
 .venv/bin/pip install -q --upgrade pip
-.venv/bin/pip install -q "lightrag-hku[api]" mcp httpx rumps psutil pyobjc-framework-Cocoa
+.venv/bin/pip install -q "lightrag-hku[api]" "mcp>=2,<3" httpx rumps psutil pyobjc-framework-Cocoa
 
 echo "▶ ollama (embeddings only: bge-m3)"
 command -v ollama >/dev/null || brew install ollama

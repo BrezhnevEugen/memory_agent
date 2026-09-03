@@ -30,7 +30,7 @@ PY="$BUILD/python/bin/python3"
 
 echo "▶ pip deps"
 "$PY" -m pip install -q --upgrade pip
-"$PY" -m pip install -q "lightrag-hku[api]" mcp httpx ollama psutil rumps pyobjc-framework-Cocoa
+"$PY" -m pip install -q "lightrag-hku[api]" "mcp>=2,<3" certifi httpx ollama psutil rumps pyobjc-framework-Cocoa
 
 # ── 2. Ollama binary ──
 if [ ! -x "$BUILD/ollama/ollama" ]; then
@@ -58,7 +58,7 @@ else
   echo "▶ launcher (shell fallback)"
   install -m 755 launcher.sh "$APP/Contents/MacOS/BrainAI"
 fi
-cp brainai.py mcp_server.py env.default VERSION "$RES/"
+cp brainai.py mcp_server.py updater.py update_ui.py env.default VERSION "$RES/"
 rsync -a --exclude '__pycache__' --exclude '*.pyc' "$BUILD/python" "$RES/"
 rsync -a "$BUILD/ollama" "$RES/"
 # Strip packaging tools/tests to save space. Keep the patterns exact: `pip*`
@@ -71,10 +71,14 @@ rm -rf "$RES"/python/lib/python*/site-packages/pip \
        "$RES"/python/lib/python*/site-packages/wheel-*.dist-info \
        "$RES"/python/lib/python*/test "$RES"/python/lib/python*/idlelib 2>/dev/null || true
 
-# Fail before signing if pruning removed a LightRAG runtime dependency.
-"$RES/python/bin/python3" -c \
-  'import ollama, pipmaster; from lightrag.api import lightrag_server' \
-  >/dev/null
+# Fail before signing if pruning removed a runtime dependency or the bundled
+# MCP entry point no longer matches the installed SDK major version.
+(
+  cd "$RES"
+  ./python/bin/python3 -c \
+    'import certifi, ollama, pipmaster, updater, update_ui; from lightrag.api import lightrag_server; from mcp.server.mcpserver import MCPServer; import mcp_server; assert isinstance(mcp_server.mcp, MCPServer)' \
+    >/dev/null
+)
 
 "$RES/python/bin/python3" make_icon.py "$RES/BrainAI.icns"
 

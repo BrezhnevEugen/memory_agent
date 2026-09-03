@@ -18,7 +18,7 @@ import sys
 from typing import Any
 
 import httpx
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -37,7 +37,7 @@ args, _ = parser.parse_known_args()
 
 LIGHTRAG_URL = args.lightrag_url.rstrip("/")
 
-mcp = FastMCP(
+mcp = MCPServer(
     "LightRAG",
     instructions=(
         "LightRAG MCP server provides tools to interact with a graph-based "

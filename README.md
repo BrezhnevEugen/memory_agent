@@ -4,7 +4,7 @@ A macOS menu bar app that gives Claude, Cursor and Codex a shared long-term memo
 
 Every chat session is ephemeral. BrainAI is not. Decisions, bug fixes, configs, preferences — an agent saves them during work and finds them again in the next session, in any tool.
 
-**[⬇ Download BrainAI-0.1.0.dmg](https://github.com/BrezhnevEugen/memory_agent/releases/latest)** · macOS 12+, Apple Silicon
+**[⬇ Download the latest BrainAI release](https://github.com/BrezhnevEugen/memory_agent/releases/latest)** · macOS 12+, Apple Silicon
 
 ## How it works
 
@@ -32,6 +32,8 @@ Everything ships inside the `.app`: relocatable Python, LightRAG, the Ollama bin
 
 The 🧠 icon in the menu bar shows server status, document and entity counts, RAM, and lets you start/stop the server, open the WebUI (`http://127.0.0.1:9621`) or switch between `deepseek-v4-flash` and `deepseek-v4-pro`.
 
+BrainAI silently checks for a new GitHub release at most once every six hours. **Check for updates…** downloads and installs a signed, notarized DMG in place after verifying its SHA-256 checksum and Developer ID; the previous app is restored automatically if the swap fails.
+
 Data lives in `~/Library/Application Support/BrainAI/` (`.env`, `rag_storage/`, `logs/`, `ollama/models/`). If you already run Ollama on `:11434`, BrainAI reuses it.
 
 ## What agents get
@@ -39,6 +41,8 @@ Data lives in `~/Library/Application Support/BrainAI/` (`.env`, `rag_storage/`, 
 MCP tools: `query`, `query_data`, `insert_text`, `create_entity`, `create_relation`, `search_graph`, `get_entity`, `get_graph_labels`, `list_documents`, `delete_document`, `delete_entity`, `health_check`.
 
 A companion [memory skill](lightrag-legacy/memory-skill-unpacked/memory/SKILL.md) tells the agent *when* to read and write: query at the start of non-trivial tasks, save decisions/bugs/configs afterwards, tag entries by domain (`work/`, `personal-project/`, `hobby-esp32/`…), write in English with dates.
+
+BrainAI does not replace an agent's native file-based auto-memory. It exposes a separate MCP server whose tools appear under the `mcp__lightrag__*` namespace. Without the companion memory skill (or explicit instructions), the agent will not automatically mirror its private file memory into the LightRAG graph.
 
 ## Repository layout
 

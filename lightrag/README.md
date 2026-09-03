@@ -26,6 +26,8 @@ Server: http://localhost:9621 (WebUI, `/docs`, `/health`).
 | `rag_storage/` | Graph data (git-ignored) |
 | `logs/` | launchd stdout/stderr |
 
+This MCP connection is separate from an agent's native file-based auto-memory. Its tools appear as `mcp__lightrag__*`; automatic read/write behavior requires the companion memory skill or equivalent agent instructions.
+
 ## MCP client config
 
 ```json
